@@ -1,70 +1,142 @@
-import streamlit as st
-from datetime import date
-import requests
+import io
+import os
 import re
+import html as ihtml
+from datetime import date
+
+import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+from pypdf import PdfReader, PdfWriter
+
 from pdf_builder import build_quote_pdf
 
-st.set_page_config(page_title="PETSHEALTH PDF Generator", page_icon="🐾", layout="wide")
+st.set_page_config(page_title="PETSHEALTH – Pet Quote Engine", page_icon="🐾", layout="wide")
 
+# --------------------------
+# CONFIG
+# --------------------------
 PETSHEALTH_TEAM_URL = "https://www.petshealth.gr/petshealt-team"
 EUROLIFE_URL = "https://www.eurolife.gr/el-GR/proionta/idiotes/katoikidio/my-happy-pet"
 INTERLIFE_URL = "https://www.interlife-programs.gr/asfalisi/eidika-programmata/#petcare"
 
-def clean_text(t: str) -> str:
-    t = re.sub(r"<[^>]+>", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+# Put these PDFs in your repo
+IPID_MAP = {
+    "PET CARE PLUS (INTERLIFE)": "assets/ipid/PETCARE_PLUS_IPID.pdf",
+    "EUROLIFE My Happy Pet (SAFE PET SYSTEM)": "assets/ipid/EUROLIFE_MY_HAPPY_PET_IPID.pdf",
+}
 
-def extract_highlights(url: str, max_items=10):
-    """
-    Lightweight extractor: pulls some meaningful text chunks.
-    Not perfect scraping, but good enough for 'official highlights' textareas.
-    """
-    r = requests.get(url, timeout=15, headers={"User-Agent":"Mozilla/5.0"})
+PLAN_KEYS = list(IPID_MAP.keys())
+
+# --------------------------
+# HELPERS
+# --------------------------
+def _clean_txt(t: str) -> str:
+    t = (t or "").strip()
+    t = re.sub(r"\s+", " ", t)
+    t = ihtml.unescape(ihtml.unescape(t))  # double unescape for stubborn entities
+    return t.strip()
+
+@st.cache_data(show_spinner=False, ttl=60*60)
+def fetch_highlights(url: str, max_items: int = 10) -> list[str]:
+    """Extract headings/list items/meaningful paragraphs from a page (lightweight)."""
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (PETSHEALTHQuote/1.0)"})
     r.raise_for_status()
-    html = r.text
 
-    # Grab headings and list items roughly
-    raw = re.findall(r"<h1[^>]*>(.*?)</h1>|<h2[^>]*>(.*?)</h2>|<h3[^>]*>(.*?)</h3>|<li[^>]*>(.*?)</li>|<p[^>]*>(.*?)</p>", html, flags=re.I|re.S)
-    items = []
-    for tup in raw:
-        for part in tup:
-            if part:
-                txt = clean_text(part)
-                # filter very short / boilerplate
-                if len(txt) >= 35 and not any(b in txt.lower() for b in ["cookie", "privacy", "javascript", "©"]):
-                    items.append(txt)
+    soup = BeautifulSoup(r.text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
 
-    # de-dup while preserving order
-    seen = set()
-    out = []
-    for it in items:
-        key = it.lower()
-        if key in seen:
+    candidates = []
+
+    # Prefer structured content first
+    for tag in soup.find_all(["h1", "h2", "h3", "li"]):
+        txt = _clean_txt(tag.get_text(" ", strip=True))
+        if 35 <= len(txt) <= 220:
+            candidates.append(txt)
+
+    # Then a few paragraphs if needed
+    if len(candidates) < max_items:
+        for tag in soup.find_all("p"):
+            txt = _clean_txt(tag.get_text(" ", strip=True))
+            if 60 <= len(txt) <= 280:
+                candidates.append(txt)
+            if len(candidates) >= max_items * 3:
+                break
+
+    # de-dup
+    out, seen = [], set()
+    for c in candidates:
+        k = c.lower()
+        if k in seen:
             continue
-        seen.add(key)
-        out.append(it)
+        seen.add(k)
+        # filter boilerplate
+        if any(b in k for b in ["cookie", "privacy", "javascript", "©", "all rights", "newsletter"]):
+            continue
+        out.append(c)
         if len(out) >= max_items:
             break
+
     return out
 
-def lines(txt: str):
+def lines(txt: str) -> list[str]:
     return [x.strip() for x in (txt or "").splitlines() if x.strip()]
 
-# ---------- UI Header ----------
+def merge_quote_with_ipids(quote_pdf_bytes: bytes, ipid_paths: list[str]) -> bytes:
+    writer = PdfWriter()
+
+    # Quote
+    quote_reader = PdfReader(io.BytesIO(quote_pdf_bytes))
+    for p in quote_reader.pages:
+        writer.add_page(p)
+
+    # IPIDs (each file is already its own pages)
+    for pth in ipid_paths:
+        if not pth or not os.path.exists(pth):
+            continue
+        rdr = PdfReader(pth)
+        for pg in rdr.pages:
+            writer.add_page(pg)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+# --------------------------
+# UI HEADER
+# --------------------------
 st.markdown(
     """
     <div style="padding:14px 18px;border-radius:14px;background:#111827;color:white;">
-      <div style="font-size:22px;font-weight:700;">PETSHEALTH – PDF Quote Auto-Generator</div>
-      <div style="opacity:0.85;">Create branded pet insurance quotations in seconds</div>
+      <div style="font-size:22px;font-weight:800;">PETSHEALTH – PDF Quote Auto-Generator</div>
+      <div style="opacity:0.85;">Client & Pet summary • Coverage cards • IPID pages • Greek Unicode ready</div>
     </div>
     """,
     unsafe_allow_html=True
 )
 st.write("")
 
-# ---------- Client / Pet ----------
+# --------------------------
+# SIDEBAR: PLAN SELECTION + IPID
+# --------------------------
+with st.sidebar:
+    st.subheader("Quote Settings")
+    selected_plans = st.multiselect(
+        "Select plan(s) to include",
+        PLAN_KEYS,
+        default=PLAN_KEYS
+    )
+
+    include_ipid = st.toggle("Append IPID pages (recommended)", value=True)
+
+    st.caption("IPID pages are appended at the end of the final PDF, based on selected plans.")
+
+# --------------------------
+# CLIENT / PET
+# --------------------------
 colA, colB = st.columns(2, gap="large")
+
 with colA:
     st.subheader("Client Details")
     client_name = st.text_input("Client Name", value="")
@@ -81,42 +153,61 @@ with colB:
 
 st.divider()
 
-# ---------- Pricing ----------
-col1, col2, col3 = st.columns([2, 2, 1], gap="large")
-with col1:
-    st.subheader("Plan 1 (Insurance)")
-    plan_1_name = st.text_input("Plan 1 Name", value="PET CARE PLUS")
-    plan_1_provider = st.text_input("Plan 1 Provider", value="INTERLIFE")
-    plan_1_price = st.number_input("Plan 1 Annual Premium (€)", min_value=0.0, value=189.0, step=1.0)
+# --------------------------
+# PRICING (only for selected plans)
+# --------------------------
+st.subheader("Plans & Pricing")
 
-with col2:
-    st.subheader("Plan 2 (Network)")
-    plan_2_name = st.text_input("Plan 2 Name", value="EUROLIFE My Happy Pet (SAFE PET SYSTEM)")
-    plan_2_provider = st.text_input("Plan 2 Provider", value="EUROLIFE")
-    plan_2_price = st.number_input("Plan 2 Annual Premium (€)", min_value=0.0, value=85.0, step=1.0)
+pcols = st.columns(2, gap="large")
 
-with col3:
-    st.subheader("Total")
-    total_price = plan_1_price + plan_2_price
-    st.metric("Total Annual Premium", f"{total_price:.2f} €")
-    quote_date = st.date_input("Quote Date", value=date.today())
+# defaults
+plan_1_name = "PET CARE PLUS"
+plan_1_provider = "INTERLIFE"
+plan_1_price = 189.0
 
-st.subheader("Notes / Disclaimer (Page 1)")
+plan_2_name = "EUROLIFE My Happy Pet (SAFE PET SYSTEM)"
+plan_2_provider = "EUROLIFE"
+plan_2_price = 85.0
+
+with pcols[0]:
+    st.markdown("### Plan 1 (Insurance)")
+    plan_1_name = st.text_input("Plan 1 Name", value=plan_1_name)
+    plan_1_provider = st.text_input("Plan 1 Provider", value=plan_1_provider)
+    plan_1_price = st.number_input("Plan 1 Annual Premium (€)", min_value=0.0, value=float(plan_1_price), step=1.0)
+
+with pcols[1]:
+    st.markdown("### Plan 2 (Network)")
+    plan_2_name = st.text_input("Plan 2 Name", value=plan_2_name)
+    plan_2_provider = st.text_input("Plan 2 Provider", value=plan_2_provider)
+    plan_2_price = st.number_input("Plan 2 Annual Premium (€)", min_value=0.0, value=float(plan_2_price), step=1.0)
+
+quote_date = st.date_input("Quote Date", value=date.today())
+
+# compute total based on selection
+total = 0.0
+if "PET CARE PLUS (INTERLIFE)" in selected_plans:
+    total += float(plan_1_price)
+if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
+    total += float(plan_2_price)
+
+st.metric("Total Annual Premium", f"{total:.2f} €")
+
 notes = st.text_area(
-    "Shown in the PDF",
-    value="Το παρόν αποτελεί μη δεσμευτική προσφορά. Οι τελικοί όροι, προϋποθέσεις, εξαιρέσεις και καλύψεις ισχύουν όπως αναγράφονται στα επίσημα έγγραφα των ασφαλιστικών εταιρειών.",
-    height=80
+    "Notes / Disclaimer (Page 1)",
+    value="Το παρόν αποτελεί μη δεσμευτική προσφορά. Οι τελικοί όροι, προϋποθέσεις, εξαιρέσεις και καλύψεις ισχύουν όπως αναγράφονται στα επίσημα έγγραφα των ασφαλιστικών εταιρειών (Policy Wording / IPID).",
+    height=90
 )
 
 st.divider()
-st.subheader("Plan Coverage Descriptions (Page 2)")
 
-left, right = st.columns(2, gap="large")
+# --------------------------
+# COVERAGE DETAILS (Page 2)
+# --------------------------
+st.subheader("Coverage Details (Page 2)")
 
-with left:
-    st.markdown("### PET CARE PLUS (INTERLIFE)")
-    plan1_limit = st.text_input("Limit (Plan 1)", value="2.000€ / ανά έτος")
-    plan1_area = st.text_input("Geographic Area (Plan 1)", value="Ελλάδα")
+with st.expander("PET CARE PLUS (INTERLIFE) – Coverage fields", expanded=("PET CARE PLUS (INTERLIFE)" in selected_plans)):
+    plan1_limit = st.text_input("Limit", value="2.000€ / ανά έτος")
+    plan1_area = st.text_input("Geographic Area", value="Ελλάδα")
 
     plan1_key_facts_txt = st.text_area(
         "Key Facts (one per line)",
@@ -124,7 +215,7 @@ with left:
             "Ελεύθερη επιλογή κτηνιάτρου και κλινικής",
             "Απαλλαγή: 50€ ανά περιστατικό (όπου εφαρμόζεται)",
         ]),
-        height=80
+        height=90
     )
 
     plan1_covers_txt = st.text_area(
@@ -136,7 +227,7 @@ with left:
             "Αστική ευθύνη κηδεμόνα: 10.000€ / έτος (απαλλαγή 50€ ανά απαίτηση)",
             "Νομική προστασία κηδεμόνα: 5.000€ (απαλλαγή 50€ ανά περιστατικό)",
         ]),
-        height=140
+        height=150
     )
 
     plan1_exclusions_txt = st.text_area(
@@ -148,7 +239,7 @@ with left:
             "Προϋπάρχουσες παθήσεις",
             "Συγγενείς παθήσεις",
         ]),
-        height=110
+        height=120
     )
 
     plan1_waiting_txt = st.text_area(
@@ -158,11 +249,10 @@ with left:
             "Απώλεια ζωής: 180 ημέρες από την έναρξη",
             "Ατύχημα: από την έναρξη του συμβολαίου",
         ]),
-        height=90
+        height=100
     )
 
-with right:
-    st.markdown("### EUROLIFE My Happy Pet (SAFE PET SYSTEM)")
+with st.expander("EUROLIFE My Happy Pet – Coverage fields", expanded=("EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans)):
     plan2_limit = st.text_input("Limit (Plan 2)", value="Απεριόριστο (εντός δικτύου, με συμμετοχή)")
     plan2_area = st.text_input("Geographic Area (Plan 2)", value="Αττική – Θεσσαλονίκη (συμβεβλημένο δίκτυο)")
 
@@ -173,7 +263,7 @@ with right:
             "Απαλλαγή: 0€ (λειτουργεί με συμμετοχή ανά υπηρεσία)",
             "Νοσοκομειακές δαπάνες & εξετάσεις με ειδικό εκπτωτικό τιμοκατάλογο για μέλη",
         ]),
-        height=90
+        height=100
     )
 
     plan2_covers_txt = st.text_area(
@@ -186,7 +276,7 @@ with right:
             "Προϋπάρχουσες παθήσεις: καλύπτονται",
             "Συγγενείς παθήσεις: καλύπτονται",
         ]),
-        height=160
+        height=170
     )
 
     plan2_exclusions_txt = st.text_area(
@@ -196,7 +286,7 @@ with right:
             "Απαιτείται ηλεκτρονική σήμανση (microchip)",
             "Φάρμακα: σύμφωνα με όρους/τιμοκατάλογο προγράμματος",
         ]),
-        height=110
+        height=120
     )
 
     plan2_waiting_txt = st.text_area(
@@ -204,42 +294,45 @@ with right:
         value="\n".join([
             "Ατύχημα ή ασθένεια: από την έναρξη του συμβολαίου (σύμφωνα με όρους προγράμματος)",
         ]),
-        height=80
+        height=90
     )
 
 st.divider()
-st.subheader("Enrich Content (optional) – Load official highlights")
 
+# --------------------------
+# PAGE 3: BIO + CREDENTIALS + OFFICIAL HIGHLIGHTS
+# --------------------------
+st.subheader("About & Official Highlights (Page 3)")
+
+if "official_bio" not in st.session_state:
+    st.session_state.official_bio = ""
 if "official_eurolife" not in st.session_state:
     st.session_state.official_eurolife = ""
 if "official_interlife" not in st.session_state:
     st.session_state.official_interlife = ""
-if "official_bio" not in st.session_state:
-    st.session_state.official_bio = ""
 
-btn = st.button("Load official highlights", use_container_width=True)
+bcol1, bcol2 = st.columns([1, 1], gap="large")
 
-if btn:
-    try:
-        eu = extract_highlights(EUROLIFE_URL, max_items=8)
-        it = extract_highlights(INTERLIFE_URL, max_items=8)
-        bio = extract_highlights(PETSHEALTH_TEAM_URL, max_items=8)
+with bcol1:
+    if st.button("Load official highlights", use_container_width=True):
+        with st.spinner("Fetching content…"):
+            try:
+                bio_items = fetch_highlights(PETSHEALTH_TEAM_URL, max_items=8)
+                eu_items = fetch_highlights(EUROLIFE_URL, max_items=8)
+                it_items = fetch_highlights(INTERLIFE_URL, max_items=8)
 
-        st.session_state.official_eurolife = "\n".join([f"• {x}" for x in eu])
-        st.session_state.official_interlife = "\n".join([f"• {x}" for x in it])
-        st.session_state.official_bio = "\n".join([x for x in bio])
+                st.session_state.official_bio = "\n".join(bio_items)
+                st.session_state.official_eurolife = "\n".join([f"• {x}" for x in eu_items])
+                st.session_state.official_interlife = "\n".join([f"• {x}" for x in it_items])
 
-        st.success("Loaded official highlights. Edit them as you wish before generating PDF.")
-    except Exception as e:
-        st.error(f"Could not load highlights: {e}")
+                st.success("Loaded. You can edit before generating PDF.")
+            except Exception as e:
+                st.error(f"Failed to load highlights: {e}")
 
-colx, coly = st.columns(2, gap="large")
-with colx:
-    official_eurolife = st.text_area("EUROLIFE official highlights (editable)", value=st.session_state.official_eurolife, height=160)
-with coly:
-    official_interlife = st.text_area("INTERLIFE official highlights (editable)", value=st.session_state.official_interlife, height=160)
+with bcol2:
+    st.caption("Tip: Keep the Bio short (3–6 lines). Highlights work best as bullets.")
 
-about_bio = st.text_area("Your Bio / About (Page 3 – editable)", value=st.session_state.official_bio, height=170)
+about_bio = st.text_area("Advisor Bio (editable)", value=st.session_state.official_bio, height=140)
 
 cii_titles = st.text_area(
     "CII Titles / Credentials (one per line)",
@@ -250,20 +343,27 @@ cii_titles = st.text_area(
     height=90
 )
 
-st.write("")
-generate = st.button("Generate PDF 🧾", use_container_width=True)
+official_eurolife = st.text_area(
+    "EUROLIFE official highlights (bullets, editable)",
+    value=st.session_state.official_eurolife,
+    height=140
+)
 
-def bullet_lines(txt: str):
-    out = []
-    for ln in (txt or "").splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        ln = ln.lstrip("•").strip()
-        out.append(ln)
-    return out
+official_interlife = st.text_area(
+    "INTERLIFE official highlights (bullets, editable)",
+    value=st.session_state.official_interlife,
+    height=140
+)
+
+st.divider()
+
+# --------------------------
+# GENERATE
+# --------------------------
+generate = st.button("Generate PDF", type="primary", use_container_width=True)
 
 if generate:
+    # Build payload
     payload = {
         "client_name": client_name,
         "client_phone": client_phone,
@@ -276,47 +376,63 @@ if generate:
 
         "plan_1_name": plan_1_name,
         "plan_1_provider": plan_1_provider,
-        "plan_1_price": f"{plan_1_price:.2f}",
-
+        "plan_1_price": f"{float(plan_1_price):.2f}",
         "plan_2_name": plan_2_name,
         "plan_2_provider": plan_2_provider,
-        "plan_2_price": f"{plan_2_price:.2f}",
+        "plan_2_price": f"{float(plan_2_price):.2f}",
 
-        "total_price": f"{total_price:.2f} €",
+        "selected_plans": selected_plans,
+        "total_price": f"{total:.2f} €",
         "quote_date": quote_date.strftime("%d/%m/%Y"),
         "notes": notes,
 
-        "plan1_limit": plan1_limit,
-        "plan1_area": plan1_area,
-        "plan1_key_facts": lines(plan1_key_facts_txt),
-        "plan1_covers": lines(plan1_covers_txt),
-        "plan1_exclusions": lines(plan1_exclusions_txt),
-        "plan1_waiting": lines(plan1_waiting_txt),
+        # plan1 fields
+        "plan1_limit": locals().get("plan1_limit", ""),
+        "plan1_area": locals().get("plan1_area", ""),
+        "plan1_key_facts": lines(locals().get("plan1_key_facts_txt", "")),
+        "plan1_covers": lines(locals().get("plan1_covers_txt", "")),
+        "plan1_exclusions": lines(locals().get("plan1_exclusions_txt", "")),
+        "plan1_waiting": lines(locals().get("plan1_waiting_txt", "")),
 
-        "plan2_limit": plan2_limit,
-        "plan2_area": plan2_area,
-        "plan2_key_facts": lines(plan2_key_facts_txt),
-        "plan2_covers": lines(plan2_covers_txt),
-        "plan2_exclusions": lines(plan2_exclusions_txt),
-        "plan2_waiting": lines(plan2_waiting_txt),
+        # plan2 fields
+        "plan2_limit": locals().get("plan2_limit", ""),
+        "plan2_area": locals().get("plan2_area", ""),
+        "plan2_key_facts": lines(locals().get("plan2_key_facts_txt", "")),
+        "plan2_covers": lines(locals().get("plan2_covers_txt", "")),
+        "plan2_exclusions": lines(locals().get("plan2_exclusions_txt", "")),
+        "plan2_waiting": lines(locals().get("plan2_waiting_txt", "")),
 
-        # Page 3 about
+        # page3
         "about_bio": about_bio,
         "cii_titles": lines(cii_titles),
 
-        # Optional official highlights for page 3
-        "official_eurolife": bullet_lines(official_eurolife),
-        "official_interlife": bullet_lines(official_interlife),
+        "official_eurolife": [x.lstrip("•").strip() for x in lines(official_eurolife)],
+        "official_interlife": [x.lstrip("•").strip() for x in lines(official_interlife)],
     }
 
-    pdf_bytes = build_quote_pdf(payload)
-    filename = f"PETSHEALTH_Quote_{client_name or 'Client'}_{pet_name or 'Pet'}.pdf".replace(" ", "_")
+    # Build quote PDF
+    quote_pdf_bytes = build_quote_pdf(payload)
 
-    st.success("PDF generated!")
+    # IPIDs chosen by selected plans
+    ipid_paths = []
+    if include_ipid:
+        for p in selected_plans:
+            ipid_paths.append(IPID_MAP.get(p))
+
+    final_pdf_bytes = merge_quote_with_ipids(quote_pdf_bytes, ipid_paths)
+
+    # Warn if IPIDs missing
+    missing = [p for p in ipid_paths if p and not os.path.exists(p)]
+    if include_ipid and missing:
+        st.warning("Some IPID files are missing in assets/ipid. Add them and redeploy:\n- " + "\n- ".join(missing))
+
+    fname = f"PETSHEALTH_Quote_{client_name or 'Client'}_{pet_name or 'Pet'}.pdf".replace(" ", "_")
+
+    st.success("PDF ready!")
     st.download_button(
-        "Download PDF",
-        data=pdf_bytes,
-        file_name=filename,
+        "Download Final PDF (Quote + IPID)",
+        data=final_pdf_bytes,
+        file_name=fname,
         mime="application/pdf",
         use_container_width=True
     )
