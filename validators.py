@@ -1,12 +1,13 @@
 """
 PETSHEALTH Quote Engine - Input Validation & Sanitization
 Prevents injection attacks, validates data, and sanitizes user inputs
+Streamlit Cloud compatible (no python-magic dependency)
 """
 import re
 import html
 from typing import Optional
 from pathlib import Path
-import magic  # python-magic for file type detection
+
 from config import (
     MAX_EMAIL_LENGTH,
     MAX_TEXT_INPUT_LENGTH,
@@ -233,6 +234,9 @@ def validate_image_file(file_bytes: bytes, filename: str) -> bool:
     """
     Validate uploaded image file (type and content).
 
+    Note: Magic bytes checking disabled for Streamlit Cloud compatibility.
+    Validation relies on file extension and size checks.
+
     Args:
         file_bytes: File content as bytes
         filename: Original filename
@@ -249,21 +253,34 @@ def validate_image_file(file_bytes: bytes, filename: str) -> bool:
     # Check file extension
     ext = Path(filename).suffix.lower().lstrip('.')
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise ValidationError(f"Invalid file type. Allowed: {', '.join(ALLOWED_IMAGE_EXTENSIONS)}")
-
-    # Check magic bytes (actual file type)
-    try:
-        mime = magic.from_buffer(file_bytes, mime=True)
-        if mime not in ALLOWED_IMAGE_MIMETYPES:
-            raise ValidationError(f"File content doesn't match extension. Detected: {mime}")
-    except Exception as e:
-        # If python-magic not available, skip this check but log it
-        pass
+        raise ValidationError(
+            f"Invalid file type. Allowed: {', '.join(ALLOWED_IMAGE_EXTENSIONS)}"
+        )
 
     # Check file size (basic sanity check)
     size_mb = len(file_bytes) / (1024 * 1024)
     if size_mb > 50:  # 50MB is excessive for an image
         raise ValidationError(f"Image too large: {size_mb:.1f}MB")
+
+    # Basic magic bytes check for common image formats (no library needed)
+    # This provides basic protection without requiring python-magic
+    magic_bytes = file_bytes[:12]
+
+    valid_signatures = [
+        b'\xff\xd8\xff',  # JPEG
+        b'\x89PNG\r\n\x1a\n',  # PNG
+        b'GIF87a',  # GIF87a
+        b'GIF89a',  # GIF89a
+        b'RIFF',  # WEBP (RIFF format)
+    ]
+
+    is_valid_image = any(magic_bytes.startswith(sig) for sig in valid_signatures)
+
+    if not is_valid_image:
+        raise ValidationError(
+            "File does not appear to be a valid image. "
+            "Please upload a real JPG, PNG, GIF, or WebP file."
+        )
 
     return True
 
@@ -338,7 +355,10 @@ def validate_url(url: str, allowed_domains: Optional[list[str]] = None) -> bool:
     if allowed_domains:
         from urllib.parse import urlparse
         domain = urlparse(url).netloc.lower()
-        return any(domain == allowed or domain.endswith('.' + allowed) for allowed in allowed_domains)
+        return any(
+            domain == allowed or domain.endswith('.' + allowed)
+            for allowed in allowed_domains
+        )
 
     return True
 
