@@ -1,6 +1,31 @@
-streamlit==1.36.0
-reportlab==4.2.2
-requests==2.32.3
-Pillow==10.4.0
-pypdf==5.1.0
-beautifulsoup4==4.12.3
+# PETSHEALTH Quote Engine - Python Dependencies
+
+# Streamlit
+streamlit==1.29.0
+
+# PDF Generation
+reportlab==4.0.7
+pypdf==3.17.4
+
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+
+# File Type Detection (optional but recommended)
+python-magic==0.4.27
+# For Windows users, use: python-magic-bin==0.4.14
+
+# Fonts
+# NotoSans fonts should be placed in assets/fonts/
+
+# Standard library (no install needed):
+# - logging
+# - ssl
+# - smtplib
+# - email
+# - html
+# - re
+# - pathlib
+# - datetime
+# - io
+# - os

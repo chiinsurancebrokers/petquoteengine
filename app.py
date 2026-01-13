@@ -1,333 +1,90 @@
-mport
-io
-import os
-import re
-import ssl
-import html as ihtml
-import smtplib
+"""
+PETSHEALTH Quote Engine - Secure Main Application
+Professional pet insurance quote generation with comprehensive security
+"""
+import logging
 from datetime import date
-from email.message import EmailMessage
-from urllib.parse import urljoin
+from typing import Optional
 
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-from pypdf import PdfReader, PdfWriter
 
+# Import secure utilities
+from config import (
+    APP_TITLE, APP_ICON, PLAN_KEYS, ADVISOR_EMAIL,
+    PETSHEALTH_HOME_URL, PETSHEALTH_TEAM_URL, EUROLIFE_URL, INTERLIFE_URL,
+    MAX_POLAROID_IMAGES,
+)
+from validators import (
+    validate_email, validate_phone, validate_date, validate_price, validate_count,
+    validate_client_data, sanitize_text_input, sanitize_text_area,
+    ValidationError, validate_image_file,
+)
+from email_utils import send_quote_email, get_rate_limit_status, EmailError, RateLimitError
+from web_utils import fetch_highlights, fetch_site_images, download_image_bytes, WebScrapingError
+from pdf_utils import merge_quote_with_ipids, get_ipid_status, PDFError
 from pdf_builder import build_quote_pdf
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # --------------------------
 # PAGE CONFIG
 # --------------------------
 st.set_page_config(
-    page_title="PETSHEALTH – Pet Quote Engine",
-    page_icon="🐾",
+    page_title=APP_TITLE,
+    page_icon=APP_ICON,
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --------------------------
-# URLs
-# --------------------------
-PETSHEALTH_HOME_URL = "https://www.petshealth.gr/"
-PETSHEALTH_TEAM_URL = "https://www.petshealth.gr/petshealt-team"
-EUROLIFE_URL = "https://www.eurolife.gr/el-GR/proionta/idiotes/katoikidio/my-happy-pet"
-INTERLIFE_URL = "https://www.interlife-programs.gr/asfalisi/eidika-programmata/#petcare"
-
-# --------------------------
-# IPID paths (must exist)
-# --------------------------
-IPID_MAP = {
-    "PET CARE PLUS (INTERLIFE)": "assets/ipid/PETCARE_PLUS_IPID.pdf",
-    "EUROLIFE My Happy Pet (SAFE PET SYSTEM)": "assets/ipid/EUROLIFE_MY_HAPPY_PET_IPID.pdf",
+# Custom CSS for better security indicators
+st.markdown("""
+<style>
+.security-indicator {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
 }
-PLAN_KEYS = list(IPID_MAP.keys())
+.security-ok {
+    background: #D1FAE5;
+    color: #065F46;
+    border-left: 4px solid #10B981;
+}
+.security-warning {
+    background: #FEF3C7;
+    color: #92400E;
+    border-left: 4px solid #F59E0B;
+}
+.security-error {
+    background: #FEE2E2;
+    color: #991B1B;
+    border-left: 4px solid #EF4444;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # --------------------------
-# EMAIL SETTINGS
+# SESSION STATE INITIALIZATION
 # --------------------------
-ADVISOR_CC = "xiatropoulos@gmail.com"  # Always CC to advisor
-
-
-def _get_secret(key: str, default: str = "") -> str:
-    """Get secret from Streamlit Cloud or environment variable"""
-    if hasattr(st, "secrets") and key in st.secrets:
-        return str(st.secrets.get(key, default))
-    return os.getenv(key, default)
-
-
-def is_valid_email(email: str) -> bool:
-    """Validate email format"""
-    if not email:
-        return False
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email.strip()))
-
-
-def send_quote_email(
-        to_email: str,
-        subject: str,
-        body_text: str,
-        pdf_bytes: bytes,
-        filename: str,
-        cc_email: str = ADVISOR_CC,
-):
-    """Send professional quote email with PDF attachment"""
-    smtp_host = _get_secret("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(_get_secret("SMTP_PORT", "587"))
-    smtp_user = _get_secret("SMTP_USER", "")
-    smtp_pass = _get_secret("SMTP_PASS", "")
-
-    if not smtp_user or not smtp_pass:
-        raise RuntimeError("Missing SMTP credentials. Please configure SMTP_USER and SMTP_PASS in Streamlit Secrets.")
-
-    msg = EmailMessage()
-    msg["From"] = f"PETSHEALTH <{smtp_user}>"
-    msg["To"] = to_email
-    if cc_email:
-        msg["Cc"] = cc_email
-    msg["Subject"] = subject
-    msg.set_content(body_text)
-
-    msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
-
-    context = ssl.create_default_context()
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.ehlo()
-        server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
-
-
-# --------------------------
-# Helpers
-# --------------------------
-def _clean_txt(t: str) -> str:
-    t = (t or "").strip()
-    t = re.sub(r"[ \t]+", " ", t)
-    t = re.sub(r"\n{3,}", "\n\n", t)
-    t = ihtml.unescape(ihtml.unescape(t))
-    return t.strip()
-
-
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def fetch_highlights(url: str, max_items: int = 8) -> list[str]:
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (PETSHEALTHQuote/1.0)"})
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    candidates = []
-    for tag in soup.find_all(["h1", "h2", "h3", "li"]):
-        txt = _clean_txt(tag.get_text(" ", strip=True))
-        if 28 <= len(txt) <= 240:
-            candidates.append(txt)
-
-    if len(candidates) < max_items:
-        for tag in soup.find_all("p"):
-            txt = _clean_txt(tag.get_text(" ", strip=True))
-            if 60 <= len(txt) <= 300:
-                candidates.append(txt)
-            if len(candidates) >= max_items * 3:
-                break
-
-    out, seen = [], set()
-    for c in candidates:
-        k = c.lower()
-        if k in seen:
-            continue
-        seen.add(k)
-        if any(b in k for b in ["cookie", "privacy", "javascript", "newsletter", "©", "all rights"]):
-            continue
-        out.append(c)
-        if len(out) >= max_items:
-            break
-    return out
-
-
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def fetch_site_images(url: str, limit: int = 18) -> list[str]:
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    imgs = []
-    for img in soup.find_all("img"):
-        src = (img.get("src") or "").strip()
-        if not src:
-            continue
-        full = urljoin(url, src)
-        low = full.lower()
-        if any(ext in low for ext in [".png", ".jpg", ".jpeg", ".webp"]):
-            imgs.append(full)
-
-    out, seen = [], set()
-    for u in imgs:
-        if u in seen:
-            continue
-        seen.add(u)
-        out.append(u)
-        if len(out) >= limit:
-            break
-    return out
-
-
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def download_image_bytes(url: str) -> bytes:
-    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    return r.content
-
-
-def lines(txt: str) -> list[str]:
-    return [x.strip() for x in (txt or "").splitlines() if x.strip()]
-
-
-def merge_quote_with_ipids(quote_pdf_bytes: bytes, ipid_paths: list[str]) -> bytes:
-    writer = PdfWriter()
-    quote_reader = PdfReader(io.BytesIO(quote_pdf_bytes))
-    for p in quote_reader.pages:
-        writer.add_page(p)
-
-    for pth in ipid_paths:
-        if not pth or not os.path.exists(pth):
-            continue
-        rdr = PdfReader(pth)
-        for pg in rdr.pages:
-            writer.add_page(pg)
-
-    out = io.BytesIO()
-    writer.write(out)
-    return out.getvalue()
-
-
-def plan_names_for_email(selected_plans: list[str]) -> str:
-    if not selected_plans:
-        return "—"
-    if len(selected_plans) == 1:
-        if "INTERLIFE" in selected_plans[0]:
-            return "PET CARE PLUS (INTERLIFE)"
-        else:
-            return "EUROLIFE My Happy Pet"
-    return "PET CARE PLUS + EUROLIFE My Happy Pet (Combined Protection)"
-
-
-def sales_email_body_gr(
-        client_name: str,
-        pet_mode: str,
-        pet_name: str,
-        pet_count: int,
-        total_price: str,
-        selected_plans: list[str],
-) -> str:
-    """PROFESSIONAL SALES-DRIVEN EMAIL TEMPLATE"""
-
-    client_display = client_name.strip() or "Αγαπητέ/ή"
-
-    # Pet-specific intro
-    if "Bulk" in pet_mode:
-        pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία των {pet_count} κατοικιδίων σας."
-        coverage_line = f"📋 **Συνολικό ετήσιο κόστος:** {total_price}"
-    else:
-        pet_display = pet_name.strip() or "το αγαπημένο σας κατοικίδιο"
-        pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία του {pet_display}."
-        coverage_line = f"📋 **Ετήσιο κόστος για τον/την {pet_display}:** {total_price}"
-
-    # Plans display
-    plans_display = plan_names_for_email(selected_plans)
-
-    # Value proposition based on plan selection
-    if len(selected_plans) == 2:
-        value_prop = """
-✅ **Συνδυασμένη κάλυψη** – Το καλύτερο και από τους δύο κόσμους:
-   • Ελεύθερη επιλογή κτηνιάτρου (INTERLIFE) για απόλυτη ευελιξία
-   • Προνομιακό δίκτυο με ειδικές τιμές (EUROLIFE) για οικονομία στις καθημερινές επισκέψεις
-   • Καλύπτει ατυχήματα, ασθένειες, check-ups και πολλά άλλα
-"""
-    elif "INTERLIFE" in selected_plans[0]:
-        value_prop = """
-✅ **Ελεύθερη επιλογή κτηνιάτρου** – Πλήρης ευελιξία:
-   • Επιλέγετε ελεύθερα κτηνίατρο και κλινική σε όλη την Ελλάδα
-   • Κάλυψη νοσοκομειακών δαπανών, ιατρικών επισκέψεων & διαγνωστικών
-   • Αστική ευθύνη & νομική προστασία κηδεμόνα συμπεριλαμβάνονται
-"""
-    else:
-        value_prop = """
-✅ **Συμβεβλημένο δίκτυο με ειδικές τιμές** – Μέγιστη οικονομία:
-   • Προνομιακό δίκτυο κτηνιάτρων με απευθείας χρέωση
-   • Δωρεάν ετήσιο check-up (Kala-azar & Ερλίχια)
-   • Καλύπτει ακόμα και προϋπάρχουσες και συγγενείς παθήσεις
-"""
-
-    email_body = f"""Καλησπέρα {client_display},
-
-{pet_intro}
-
-Επισυνάπτω την προσωπική σας προσφορά με όλες τις λεπτομέρειες κάλυψης.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 **Η ΠΡΟΤΑΣΗ ΣΑΣ**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📦 **Επιλεγμένα προγράμματα:** {plans_display}
-{coverage_line}
-{value_prop}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📎 **ΣΤΟ ΕΠΙΣΥΝΑΠΤΟΜΕΝΟ PDF:**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-• Αναλυτική κάλυψη κάθε προγράμματος
-• Τι καλύπτεται & τι όχι (με πλήρη διαφάνεια)
-• Περίοδοι αναμονής & όροι ασφάλισης
-• Επίσημα έγγραφα IPID (Information Document)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 **ΕΠΟΜΕΝΑ ΒΗΜΑΤΑ ΓΙΑ ΕΝΕΡΓΟΠΟΙΗΣΗ:**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1️⃣ **Επιβεβαιώστε τα στοιχεία microchip**
-   → Στείλτε μας τον/τους αριθμό/ούς microchip (απαραίτητο για όλα τα προγράμματα)
-
-2️⃣ **Επιλέξτε το πρόγραμμα που σας ταιριάζει**
-   → Μεμονωμένο ή συνδυασμένο; Μπορώ να σας συμβουλεύσω ανάλογα με τις ανάγκες σας
-
-3️⃣ **Ολοκληρώστε την αίτηση online ή με τη βοήθειά μας**
-   → Η κάλυψη ενεργοποιείται άμεσα μετά την έγκριση
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 **ΓΙΑΤΙ ΝΑ ΕΝΕΡΓΟΠΟΙΗΣΕΤΕ ΤΩΡΑ:**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⏰ Οι προϋπάρχουσες παθήσεις δεν καλύπτονται – όσο νωρίτερα ξεκινήσετε, τόσο καλύτερα
-💰 Μια επέμβαση στο ισχίο μπορεί να κοστίσει €2.000+ – η ασφάλιση κοστίζει κλάσματα αυτού
-🛡️ Ηρεμία & οικονομική ασφάλεια για απρόβλεπτα περιστατικά
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Είμαι στη διάθεσή σας για οποιαδήποτε ερώτηση ή διευκρίνιση.
-Απλά απαντήστε σε αυτό το email ή καλέστε με στο τηλέφωνο παρακάτω.
-
-**Με εκτίμηση,**
-
-**Chris Iatropoulos**  
-*Pet Insurance Advisor | CII Certified (PL4, W01)*
-
-📧 info@petshealth.gr  
-📱 +30 211 700 533  
-🌐 www.petshealth.gr
-
-*"Because we care for your pets as much as you do"* 🐾
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-P.S. Έχετε ερωτήσεις; Μη διστάσετε να με ρωτήσετε οτιδήποτε. Ο στόχος μου είναι να βρούμε την ιδανική λύση για εσάς και το κατοικίδιό σας – όχι απλά να πουλήσω μια ασφάλεια. 💚
-"""
-
-    return email_body.strip()
-
+if "site_images" not in st.session_state:
+    st.session_state.site_images = []
+if "official_bio" not in st.session_state:
+    st.session_state.official_bio = ""
+if "official_eurolife" not in st.session_state:
+    st.session_state.official_eurolife = ""
+if "official_interlife" not in st.session_state:
+    st.session_state.official_interlife = ""
+if "pdf_generated" not in st.session_state:
+    st.session_state.pdf_generated = False
+if "final_pdf_bytes" not in st.session_state:
+    st.session_state.final_pdf_bytes = None
+if "final_filename" not in st.session_state:
+    st.session_state.final_filename = None
 
 # --------------------------
 # HEADER UI
@@ -342,7 +99,7 @@ st.markdown(
         Επαγγελματική δημιουργία προσφορών • Σύγκριση προγραμμάτων • IPID pages • Αυτόματη αποστολή email
       </div>
       <div style="margin-top:12px;padding:10px 16px;background:rgba(255,255,255,0.15);border-radius:8px;font-size:13px;">
-        <strong>🎯 Sales-Driven Quote Engine</strong> – Designed to convert prospects into clients
+        <strong>🛡️ Secure Quote Engine</strong> – Enterprise-grade security with input validation and rate limiting
       </div>
     </div>
     """,
@@ -351,81 +108,243 @@ st.markdown(
 st.write("")
 
 # --------------------------
-# Sidebar
+# SIDEBAR
 # --------------------------
 with st.sidebar:
     st.subheader("⚙️ Output Settings")
+
     selected_plans = st.multiselect(
         "Select plan(s)",
         PLAN_KEYS,
         default=PLAN_KEYS,
         help="Choose which plans to include in the quote"
     )
+
     include_ipid = st.toggle("📄 Append IPID pages (recommended)", value=True)
 
     st.divider()
-    st.caption("📧 **Email Settings**")
-    st.info(f"✅ All quotes are automatically CC'd to:\n**{ADVISOR_CC}**", icon="ℹ️")
+
+    # Rate limit status
+    st.caption("📧 **Email Rate Limit**")
+    rate_status = get_rate_limit_status()
+    st.metric(
+        "Remaining sends",
+        f"{rate_status['remaining']}/{rate_status['max_per_hour']}",
+        help="Emails per hour limit"
+    )
+
+    # IPID status
+    if selected_plans:
+        st.caption("📋 **IPID Status**")
+        ipid_status = get_ipid_status(selected_plans)
+
+        if ipid_status["missing"]:
+            st.warning(f"⚠️ {len(ipid_status['missing'])} IPID(s) missing")
+            with st.expander("View missing IPIDs"):
+                for item in ipid_status["missing"]:
+                    st.text(f"• {item['plan']}: {item['reason']}")
+        else:
+            st.success(f"✅ All {len(ipid_status['available'])} IPIDs available")
+
+    st.divider()
+    st.caption(f"🔒 **Security**: Auto CC to {ADVISOR_EMAIL}")
+
 
 # --------------------------
-# Client / Pets
+# HELPER FUNCTIONS
+# --------------------------
+
+def safe_input(
+        label: str,
+        value: str = "",
+        placeholder: str = "",
+        validation_func: Optional[callable] = None,
+        error_message: str = "Invalid input",
+        max_length: int = 500,
+) -> tuple[str, bool]:
+    """
+    Create a text input with validation feedback.
+
+    Returns:
+        (value, is_valid)
+    """
+    input_value = st.text_input(label, value=value, placeholder=placeholder, max_chars=max_length)
+
+    if input_value and validation_func:
+        is_valid = validation_func(input_value)
+        if not is_valid:
+            st.error(f"❌ {error_message}")
+            return input_value, False
+
+    return input_value, True
+
+
+def lines(txt: str) -> list[str]:
+    """Split text into non-empty lines"""
+    return [x.strip() for x in (txt or "").splitlines() if x.strip()]
+
+
+# --------------------------
+# CLIENT & PET INFORMATION
 # --------------------------
 st.subheader("👤 Client & Pet Information")
 
 c1, c2 = st.columns([1, 1], gap="large")
+
 with c1:
     st.markdown("#### Client Details")
-    client_name = st.text_input("Client Name", value="", placeholder="e.g. Γιώργος Παπαδόπουλος")
-    client_phone = st.text_input("Phone", value="", placeholder="e.g. +30 210 123 4567")
-    client_email = st.text_input("Email", value="", placeholder="e.g. client@example.com")
-    location = st.text_input("Location (optional)", value="", placeholder="e.g. Αθήνα, Κέντρο")
+
+    client_name = st.text_input(
+        "Client Name *",
+        value="",
+        placeholder="e.g. Γιώργος Παπαδόπουλος",
+        max_chars=200,
+        help="Required field"
+    )
+
+    client_phone = st.text_input(
+        "Phone *",
+        value="",
+        placeholder="e.g. +30 210 123 4567",
+        max_chars=20,
+        help="Required field"
+    )
+    # Validate phone
+    if client_phone and not validate_phone(client_phone):
+        st.error("❌ Invalid phone number format")
+
+    client_email = st.text_input(
+        "Email *",
+        value="",
+        placeholder="e.g. client@example.com",
+        max_chars=254,
+        help="Required field - will be validated"
+    )
+    # Validate email in real-time
+    if client_email:
+        if validate_email(client_email):
+            st.success("✅ Valid email address")
+        else:
+            st.error("❌ Invalid email address")
+
+    location = st.text_input(
+        "Location (optional)",
+        value="",
+        placeholder="e.g. Αθήνα, Κέντρο",
+        max_chars=200
+    )
 
 with c2:
     st.markdown("#### Quote Mode")
-    quote_mode = st.radio("Mode", ["Detailed (single pet)", "Bulk (number of pets)"], horizontal=True)
+
+    quote_mode = st.radio(
+        "Mode",
+        ["Detailed (single pet)", "Bulk (number of pets)"],
+        horizontal=True
+    )
+
     pet_count = 1
     bulk_summary = ""
+
     if quote_mode == "Bulk (number of pets)":
-        pet_count = int(st.number_input("Number of pets", min_value=1, value=2, step=1))
+        pet_count = int(st.number_input(
+            "Number of pets *",
+            min_value=1,
+            max_value=50,
+            value=2,
+            step=1,
+            help="Maximum 50 pets per quote"
+        ))
+
         bulk_summary = st.text_area(
             "Bulk description (optional)",
-            value="• Έχω 6 σκυλιά\n• Όλα είναι ημίαιμα\n• Βάρος: 20–40 κιλά\n• Ηλικίες: 2 έως 5 ετών\n• Τοποθεσία: Αθήνα\n• Όλα έχουν microchip",
-            height=120
+            value="",
+            max_chars=2000,
+            height=120,
+            placeholder="e.g. 6 dogs, mixed breeds, 20-40kg, ages 2-5 years, Athens location"
         )
 
 st.write("")
 st.markdown("#### 🐕 Pet Details (for Detailed mode)")
+
 p1, p2, p3 = st.columns(3, gap="large")
+
 with p1:
-    pet_name = st.text_input("Pet Name", value="", placeholder="e.g. Max")
+    pet_name = st.text_input(
+        "Pet Name",
+        value="",
+        placeholder="e.g. Max",
+        max_chars=100
+    )
     pet_species = st.selectbox("Species", ["Dog", "Cat"], index=0)
+
 with p2:
-    pet_breed = st.text_input("Breed", value="", placeholder="e.g. Λαμπραντόρ")
-    pet_dob = st.text_input("Date of Birth (dd/mm/yyyy)", value="", placeholder="e.g. 15/03/2020")
+    pet_breed = st.text_input(
+        "Breed",
+        value="",
+        placeholder="e.g. Λαμπραντόρ",
+        max_chars=100
+    )
+    pet_dob = st.text_input(
+        "Date of Birth (dd/mm/yyyy)",
+        value="",
+        placeholder="e.g. 15/03/2020",
+        max_chars=10
+    )
+    # Validate date format
+    if pet_dob and not validate_date(pet_dob):
+        st.error("❌ Invalid date format (use dd/mm/yyyy)")
+
 with p3:
-    pet_microchip = st.text_input("Microchip ID", value="", placeholder="e.g. 977200...")
+    pet_microchip = st.text_input(
+        "Microchip ID",
+        value="",
+        placeholder="e.g. 977200...",
+        max_chars=50
+    )
 
 st.divider()
 
 # --------------------------
-# Plans & Pricing
+# PLANS & PRICING
 # --------------------------
 st.subheader("💶 Plans & Pricing")
 
 pc1, pc2 = st.columns(2, gap="large")
+
 with pc1:
     st.markdown("### 🏥 Plan 1 (Insurance)")
-    plan_1_name = st.text_input("Plan 1 Name", value="PET CARE PLUS")
-    plan_1_provider = st.text_input("Plan 1 Provider", value="INTERLIFE")
-    plan_1_price = st.number_input("Plan 1 Annual Premium (€)", min_value=0.0, value=189.0, step=1.0)
+    plan_1_name = st.text_input("Plan 1 Name", value="PET CARE PLUS", max_chars=200)
+    plan_1_provider = st.text_input("Plan 1 Provider", value="INTERLIFE", max_chars=200)
+    plan_1_price = st.number_input(
+        "Plan 1 Annual Premium (€)",
+        min_value=0.0,
+        max_value=10000.0,
+        value=189.0,
+        step=1.0,
+        help="Maximum €10,000"
+    )
+
 with pc2:
     st.markdown("### 🏨 Plan 2 (Network)")
-    plan_2_name = st.text_input("Plan 2 Name", value="EUROLIFE My Happy Pet (SAFE PET SYSTEM)")
-    plan_2_provider = st.text_input("Plan 2 Provider", value="EUROLIFE")
-    plan_2_price = st.number_input("Plan 2 Annual Premium (€)", min_value=0.0, value=85.0, step=1.0)
+    plan_2_name = st.text_input(
+        "Plan 2 Name",
+        value="EUROLIFE My Happy Pet (SAFE PET SYSTEM)",
+        max_chars=200
+    )
+    plan_2_provider = st.text_input("Plan 2 Provider", value="EUROLIFE", max_chars=200)
+    plan_2_price = st.number_input(
+        "Plan 2 Annual Premium (€)",
+        min_value=0.0,
+        max_value=10000.0,
+        value=85.0,
+        step=1.0,
+        help="Maximum €10,000"
+    )
 
 quote_date = st.date_input("Quote Date", value=date.today())
 
+# Calculate total
 mult = int(pet_count) if "Bulk" in quote_mode else 1
 total = 0.0
 if "PET CARE PLUS (INTERLIFE)" in selected_plans:
@@ -437,7 +356,9 @@ st.metric("💰 Total Annual Premium", f"{total:.2f} €", help="Total cost for 
 
 marketing_hook = st.text_input(
     "Marketing headline (Page 1)",
-    value="Προστασία υγείας για τα κατοικίδια – χωρίς άγχος κόστους."
+    value="Προστασία υγείας για τα κατοικίδια – χωρίς άγχος κόστους.",
+    max_chars=150,
+    help="Keep it short and impactful"
 )
 
 notes = st.text_area(
@@ -447,20 +368,23 @@ notes = st.text_area(
         "όπως αναγράφονται στα επίσημα έγγραφα των ασφαλιστικών εταιρειών (Policy Wording / IPID). "
         "Υπάρχει η δυνατότητα τα προγράμματα να δοθούν μεμονωμένα."
     ),
+    max_chars=2000,
     height=90
 )
 
 st.divider()
 
 # --------------------------
-# Coverage (Page 2)
+# COVERAGE DETAILS (Page 2)
 # --------------------------
 st.subheader("📋 Coverage Details (Page 2)")
 
-with st.expander("🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
-                 expanded=("PET CARE PLUS (INTERLIFE)" in selected_plans)):
-    plan1_limit = st.text_input("Limit", value="2.000€ / ανά έτος")
-    plan1_area = st.text_input("Geographic Area", value="Ελλάδα")
+with st.expander(
+        "🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
+        expanded=("PET CARE PLUS (INTERLIFE)" in selected_plans)
+):
+    plan1_limit = st.text_input("Limit", value="2.000€ / ανά έτος", max_chars=200)
+    plan1_area = st.text_input("Geographic Area", value="Ελλάδα", max_chars=200)
 
     plan1_key_facts_txt = st.text_area(
         "Key Facts (one per line)",
@@ -468,6 +392,7 @@ with st.expander("🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
             "Ελεύθερη επιλογή κτηνιάτρου και κλινικής",
             "Απαλλαγή: 50€ ανά περιστατικό (όπου εφαρμόζεται)",
         ]),
+        max_chars=2000,
         height=90
     )
 
@@ -480,6 +405,7 @@ with st.expander("🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
             "Αστική ευθύνη κηδεμόνα: 10.000€ / έτος (απαλλαγή 50€ ανά απαίτηση)",
             "Νομική προστασία κηδεμόνα: 5.000€ (απαλλαγή 50€ ανά περιστατικό)",
         ]),
+        max_chars=3000,
         height=150
     )
 
@@ -492,6 +418,7 @@ with st.expander("🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
             "Προϋπάρχουσες παθήσεις",
             "Συγγενείς παθήσεις",
         ]),
+        max_chars=2000,
         height=120
     )
 
@@ -502,13 +429,17 @@ with st.expander("🏥 PET CARE PLUS (INTERLIFE) – Coverage fields",
             "Απώλεια ζωής: 180 ημέρες από την έναρξη",
             "Ατύχημα: από την έναρξη του συμβολαίου",
         ]),
+        max_chars=2000,
         height=100
     )
 
-with st.expander("🏨 EUROLIFE My Happy Pet – Coverage fields",
-                 expanded=("EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans)):
-    plan2_limit = st.text_input("Limit (Plan 2)", value="Απεριόριστο (εντός δικτύου, με συμμετοχή)")
-    plan2_area = st.text_input("Geographic Area (Plan 2)", value="Αττική – Θεσσαλονίκη (συμβεβλημένο δίκτυο)")
+with st.expander(
+        "🏨 EUROLIFE My Happy Pet – Coverage fields",
+        expanded=("EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans)
+):
+    plan2_limit = st.text_input("Limit (Plan 2)", value="Απεριόριστο (εντός δικτύου, με συμμετοχή)", max_chars=200)
+    plan2_area = st.text_input("Geographic Area (Plan 2)", value="Αττική – Θεσσαλονίκη (συμβεβλημένο δίκτυο)",
+                               max_chars=200)
 
     plan2_key_facts_txt = st.text_area(
         "Key Facts (one per line)",
@@ -517,6 +448,7 @@ with st.expander("🏨 EUROLIFE My Happy Pet – Coverage fields",
             "Απαλλαγή: 0€ (λειτουργεί με συμμετοχή ανά υπηρεσία)",
             "Ειδικός εκπτωτικός τιμοκατάλογος για μέλη του δικτύου",
         ]),
+        max_chars=2000,
         height=100
     )
 
@@ -529,6 +461,7 @@ with st.expander("🏨 EUROLIFE My Happy Pet – Coverage fields",
             "Προϋπάρχουσες παθήσεις: καλύπτονται",
             "Συγγενείς παθήσεις: καλύπτονται",
         ]),
+        max_chars=3000,
         height=160
     )
 
@@ -539,6 +472,7 @@ with st.expander("🏨 EUROLIFE My Happy Pet – Coverage fields",
             "Απαιτείται microchip",
             "Φάρμακα: σύμφωνα με όρους/τιμοκατάλογο προγράμματος",
         ]),
+        max_chars=2000,
         height=120
     )
 
@@ -547,81 +481,97 @@ with st.expander("🏨 EUROLIFE My Happy Pet – Coverage fields",
         value="\n".join([
             "Ατύχημα ή ασθένεια: από την έναρξη του συμβολαίου (σύμφωνα με όρους προγράμματος)",
         ]),
+        max_chars=2000,
         height=90
     )
 
 st.divider()
 
 # --------------------------
-# Polaroids
+# POLAROID IMAGES
 # --------------------------
 st.subheader("📸 Happy Photos (Polaroids – 2 per page)")
 
-if "site_images" not in st.session_state:
-    st.session_state["site_images"] = []
-
 a, b = st.columns([1, 1], gap="large")
+
 with a:
     if st.button("🌐 Load images from petshealth.gr", use_container_width=True):
-        try:
-            st.session_state["site_images"] = fetch_site_images(PETSHEALTH_HOME_URL, limit=18)
-            st.success(f"✅ Loaded {len(st.session_state['site_images'])} images from site.")
-        except Exception as e:
-            st.error(f"❌ Failed to load images: {e}")
+        with st.spinner("Fetching images..."):
+            try:
+                images = fetch_site_images(PETSHEALTH_HOME_URL, limit=18)
+                st.session_state.site_images = images
+                st.success(f"✅ Loaded {len(images)} images from site")
+            except WebScrapingError as e:
+                st.error(f"❌ Failed to load images: {e}")
+            except Exception as e:
+                st.error(f"❌ Unexpected error: {e}")
+                logger.error(f"Image fetch error: {e}", exc_info=True)
 
 with b:
-    st.caption("Pick 2–6 images (we rotate them across pages). Upload works as fallback.")
+    st.caption(f"Pick 2–{MAX_POLAROID_IMAGES} images (rotated across pages)")
 
+# Site image selection
 site_images = st.session_state.get("site_images", [])
 selected_image_urls = []
+
 if site_images:
     selected_image_urls = st.multiselect(
-        "Select site images (2–6)",
+        f"Select site images (2–{MAX_POLAROID_IMAGES})",
         site_images,
         default=site_images[:2] if len(site_images) >= 2 else site_images
     )
 
+# File upload
 uploaded = st.file_uploader(
     "Or upload your own images (JPG/PNG/WebP)",
     type=["jpg", "jpeg", "png", "webp"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help=f"Maximum {MAX_POLAROID_IMAGES} images total"
 )
 
 st.divider()
 
 # --------------------------
-# About & Highlights
+# ABOUT & HIGHLIGHTS (Page 3)
 # --------------------------
 st.subheader("ℹ️ About & Official Highlights (Page 3)")
 
-if "official_bio" not in st.session_state:
-    st.session_state.official_bio = ""
-if "official_eurolife" not in st.session_state:
-    st.session_state.official_eurolife = ""
-if "official_interlife" not in st.session_state:
-    st.session_state.official_interlife = ""
-
 x1, x2 = st.columns([1, 1], gap="large")
+
 with x1:
     if st.button("🌐 Load official highlights from web", use_container_width=True):
         with st.spinner("Fetching content from PETSHEALTH, EUROLIFE, INTERLIFE..."):
             try:
-                bio_items = fetch_highlights(PETSHEALTH_TEAM_URL, max_items=6)
-                eu_items = fetch_highlights(EUROLIFE_URL, max_items=8)
-                it_items = fetch_highlights(INTERLIFE_URL, max_items=8)
+                from web_utils import fetch_all_content
 
-                st.session_state.official_bio = "\n".join(bio_items)
-                st.session_state.official_eurolife = "\n".join([f"• {x}" for x in eu_items])
-                st.session_state.official_interlife = "\n".join([f"• {x}" for x in it_items])
-                st.success("✅ Loaded. Edit before generating PDF.")
+                urls = {
+                    "bio": PETSHEALTH_TEAM_URL,
+                    "eurolife": EUROLIFE_URL,
+                    "interlife": INTERLIFE_URL,
+                }
+
+                results = fetch_all_content(urls, max_highlights=8)
+
+                st.session_state.official_bio = "\n".join(results.get("bio", []))
+                st.session_state.official_eurolife = "\n".join([f"• {x}" for x in results.get("eurolife", [])])
+                st.session_state.official_interlife = "\n".join([f"• {x}" for x in results.get("interlife", [])])
+
+                st.success("✅ Content loaded. Review and edit before generating PDF.")
+
             except Exception as e:
                 st.error(f"❌ Failed to load highlights: {e}")
+                logger.error(f"Highlights fetch error: {e}", exc_info=True)
 
 with x2:
-    st.caption("Keep it short & trust-based (marketing).")
+    st.caption("Keep it short & trust-based (marketing)")
 
-about_bio = st.text_area("Advisor Bio (editable – recommended 5–7 lines)", value=st.session_state.official_bio,
-                         height=150)
+about_bio = st.text_area(
+    "Advisor Bio (editable – recommended 5–7 lines)",
+    value=st.session_state.official_bio,
+    max_chars=3000,
+    height=150,
+    help="Brief professional bio to build trust"
+)
 
 cii_titles = st.text_area(
     "CII Titles / Credentials (one per line)",
@@ -629,179 +579,363 @@ cii_titles = st.text_area(
         "CII – (PL4) Introduction to Pet Insurance (Unit achieved: June 2023)",
         "CII – (W01) Award in General Insurance (English) (Unit achieved: March 2025)",
     ]),
+    max_chars=1000,
     height=90
 )
 
-official_eurolife = st.text_area("EUROLIFE highlights (bullets)", value=st.session_state.official_eurolife, height=140)
-official_interlife = st.text_area("INTERLIFE highlights (bullets)", value=st.session_state.official_interlife,
-                                  height=140)
+official_eurolife = st.text_area(
+    "EUROLIFE highlights (bullets)",
+    value=st.session_state.official_eurolife,
+    max_chars=3000,
+    height=140
+)
+
+official_interlife = st.text_area(
+    "INTERLIFE highlights (bullets)",
+    value=st.session_state.official_interlife,
+    max_chars=3000,
+    height=140
+)
 
 st.divider()
 
 # --------------------------
-# Generate PDF
+# GENERATE PDF
 # --------------------------
 st.subheader("🎨 Generate PDF Quote")
-generate = st.button("✨ Generate Professional PDF Quote", type="primary", use_container_width=True)
 
-final_pdf_bytes = None
-filename = None
-missing_ipids = []
+# Pre-generation validation
+validation_errors = []
+
+if not client_name.strip():
+    validation_errors.append("Client name is required")
+if not client_email.strip():
+    validation_errors.append("Client email is required")
+elif not validate_email(client_email):
+    validation_errors.append("Client email is invalid")
+if not client_phone.strip():
+    validation_errors.append("Client phone is required")
+elif not validate_phone(client_phone):
+    validation_errors.append("Client phone format is invalid")
+
+if pet_dob and not validate_date(pet_dob):
+    validation_errors.append("Pet date of birth format is invalid (use dd/mm/yyyy)")
+
+if not selected_plans:
+    validation_errors.append("At least one plan must be selected")
+
+if validation_errors:
+    st.error("❌ **Please fix the following errors before generating PDF:**")
+    for err in validation_errors:
+        st.error(f"  • {err}")
+
+generate = st.button(
+    "✨ Generate Professional PDF Quote",
+    type="primary",
+    use_container_width=True,
+    disabled=(len(validation_errors) > 0)
+)
 
 if generate:
-    polaroid_bytes = []
+    try:
+        with st.spinner("🎨 Building professional PDF quote..."):
 
-    # Download selected site images
-    for u in (selected_image_urls or [])[:6]:
-        try:
-            polaroid_bytes.append(download_image_bytes(u))
-        except Exception:
-            pass
+            # Sanitize all inputs
+            sanitized_data = {
+                "marketing_hook": sanitize_text_input(marketing_hook, 150),
+                "client_name": sanitize_text_input(client_name),
+                "client_phone": sanitize_text_input(client_phone, 20),
+                "client_email": sanitize_text_input(client_email, 254),
+                "location": sanitize_text_input(location),
+                "quote_mode": quote_mode,
+                "pet_count": int(pet_count),
+                "bulk_summary": sanitize_text_area(bulk_summary),
+                "pet_name": sanitize_text_input(pet_name),
+                "pet_species": pet_species,
+                "pet_breed": sanitize_text_input(pet_breed),
+                "pet_dob": sanitize_text_input(pet_dob, 10),
+                "pet_microchip": sanitize_text_input(pet_microchip, 50),
+                "plan_1_name": sanitize_text_input(plan_1_name),
+                "plan_1_provider": sanitize_text_input(plan_1_provider),
+                "plan_1_price": f"{float(plan_1_price):.2f}",
+                "plan_2_name": sanitize_text_input(plan_2_name),
+                "plan_2_provider": sanitize_text_input(plan_2_provider),
+                "plan_2_price": f"{float(plan_2_price):.2f}",
+                "selected_plans": selected_plans,
+                "price_multiplier": int(mult),
+                "plan_1_price_total": f"{float(plan_1_price) * mult:.2f}",
+                "plan_2_price_total": f"{float(plan_2_price) * mult:.2f}",
+                "total_price": f"{total:.2f} €",
+                "quote_date": quote_date.strftime("%d/%m/%Y"),
+                "notes": sanitize_text_area(notes),
+                "plan1_limit": sanitize_text_input(locals().get("plan1_limit", "")),
+                "plan1_area": sanitize_text_input(locals().get("plan1_area", "")),
+                "plan1_key_facts": lines(locals().get("plan1_key_facts_txt", "")),
+                "plan1_covers": lines(locals().get("plan1_covers_txt", "")),
+                "plan1_exclusions": lines(locals().get("plan1_exclusions_txt", "")),
+                "plan1_waiting": lines(locals().get("plan1_waiting_txt", "")),
+                "plan2_limit": sanitize_text_input(locals().get("plan2_limit", "")),
+                "plan2_area": sanitize_text_input(locals().get("plan2_area", "")),
+                "plan2_key_facts": lines(locals().get("plan2_key_facts_txt", "")),
+                "plan2_covers": lines(locals().get("plan2_covers_txt", "")),
+                "plan2_exclusions": lines(locals().get("plan2_exclusions_txt", "")),
+                "plan2_waiting": lines(locals().get("plan2_waiting_txt", "")),
+                "about_bio": sanitize_text_area(about_bio),
+                "cii_titles": lines(cii_titles),
+                "official_eurolife": [x.lstrip("•").strip() for x in lines(official_eurolife)],
+                "official_interlife": [x.lstrip("•").strip() for x in lines(official_interlife)],
+            }
 
-    # Add uploaded images
-    if uploaded:
-        for f in uploaded[:6]:
-            try:
-                polaroid_bytes.append(f.read())
-            except Exception:
-                pass
+            # Process polaroid images
+            polaroid_bytes = []
 
-    polaroid_bytes = polaroid_bytes[:10]
+            # Download selected site images
+            for url in (selected_image_urls or [])[:MAX_POLAROID_IMAGES]:
+                try:
+                    img_bytes = download_image_bytes(url)
+                    if img_bytes:
+                        polaroid_bytes.append(img_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to download image {url}: {e}")
 
-    payload = {
-        "marketing_hook": marketing_hook,
+            # Add uploaded images
+            if uploaded:
+                for uploaded_file in uploaded[:MAX_POLAROID_IMAGES]:
+                    try:
+                        img_bytes = uploaded_file.read()
+                        # Validate image
+                        validate_image_file(img_bytes, uploaded_file.name)
+                        polaroid_bytes.append(img_bytes)
+                    except ValidationError as e:
+                        st.warning(f"⚠️ Skipped {uploaded_file.name}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to process uploaded image: {e}")
 
-        "client_name": client_name,
-        "client_phone": client_phone,
-        "client_email": client_email,
-        "location": location,
+            # Limit total images
+            polaroid_bytes = polaroid_bytes[:MAX_POLAROID_IMAGES]
+            sanitized_data["polaroid_images"] = polaroid_bytes
 
-        "quote_mode": quote_mode,
-        "pet_count": int(pet_count),
-        "bulk_summary": bulk_summary,
+            logger.info(f"Building PDF with {len(polaroid_bytes)} polaroid images")
 
-        "pet_name": pet_name,
-        "pet_species": pet_species,
-        "pet_breed": pet_breed,
-        "pet_dob": pet_dob,
-        "pet_microchip": pet_microchip,
+            # Generate quote PDF
+            quote_pdf_bytes = build_quote_pdf(sanitized_data)
+            logger.info("Quote PDF generated successfully")
 
-        "plan_1_name": plan_1_name,
-        "plan_1_provider": plan_1_provider,
-        "plan_1_price": f"{float(plan_1_price):.2f}",
-        "plan_2_name": plan_2_name,
-        "plan_2_provider": plan_2_provider,
-        "plan_2_price": f"{float(plan_2_price):.2f}",
+            # Merge with IPIDs
+            if include_ipid:
+                final_pdf_bytes = merge_quote_with_ipids(quote_pdf_bytes, selected_plans)
+                logger.info("PDFs merged successfully")
+            else:
+                final_pdf_bytes = quote_pdf_bytes
 
-        "selected_plans": selected_plans,
-        "price_multiplier": int(mult),
-        "plan_1_price_total": f"{float(plan_1_price) * mult:.2f}",
-        "plan_2_price_total": f"{float(plan_2_price) * mult:.2f}",
-        "total_price": f"{total:.2f} €",
-        "quote_date": quote_date.strftime("%d/%m/%Y"),
-        "notes": notes,
+            # Generate safe filename
+            from validators import sanitize_filename
 
-        "plan1_limit": locals().get("plan1_limit", ""),
-        "plan1_area": locals().get("plan1_area", ""),
-        "plan1_key_facts": lines(locals().get("plan1_key_facts_txt", "")),
-        "plan1_covers": lines(locals().get("plan1_covers_txt", "")),
-        "plan1_exclusions": lines(locals().get("plan1_exclusions_txt", "")),
-        "plan1_waiting": lines(locals().get("plan1_waiting_txt", "")),
+            safe_client = sanitize_filename(client_name or "Client")
+            safe_pet = sanitize_filename(pet_name or ("Bulk" if "Bulk" in quote_mode else "Pet"))
+            filename = f"PETSHEALTH_Quote_{safe_client}_{safe_pet}_{quote_date.strftime('%Y%m%d')}.pdf"
 
-        "plan2_limit": locals().get("plan2_limit", ""),
-        "plan2_area": locals().get("plan2_area", ""),
-        "plan2_key_facts": lines(locals().get("plan2_key_facts_txt", "")),
-        "plan2_covers": lines(locals().get("plan2_covers_txt", "")),
-        "plan2_exclusions": lines(locals().get("plan2_exclusions_txt", "")),
-        "plan2_waiting": lines(locals().get("plan2_waiting_txt", "")),
+            # Store in session state
+            st.session_state.pdf_generated = True
+            st.session_state.final_pdf_bytes = final_pdf_bytes
+            st.session_state.final_filename = filename
 
-        "about_bio": about_bio,
-        "cii_titles": lines(cii_titles),
-        "official_eurolife": [x.lstrip("•").strip() for x in lines(official_eurolife)],
-        "official_interlife": [x.lstrip("•").strip() for x in lines(official_interlife)],
+            st.success("✅ PDF generated successfully!")
 
-        "polaroid_images": polaroid_bytes,
-    }
+            # Download button
+            st.download_button(
+                "📥 Download Final PDF (Quote + IPID)",
+                data=final_pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                use_container_width=True
+            )
 
-    with st.spinner("🎨 Building professional PDF quote..."):
-        quote_pdf_bytes = build_quote_pdf(payload)
-
-    ipid_paths = []
-    if include_ipid:
-        for p in selected_plans:
-            ipid_paths.append(IPID_MAP.get(p))
-
-    missing_ipids = [p for p in ipid_paths if p and not os.path.exists(p)]
-    final_pdf_bytes = merge_quote_with_ipids(quote_pdf_bytes, ipid_paths)
-
-    safe_client = (client_name or "Client").replace(" ", "_")
-    safe_pet = (pet_name or ("Bulk" if "Bulk" in quote_mode else "Pet")).replace(" ", "_")
-    filename = f"PETSHEALTH_Quote_{safe_client}_{safe_pet}_{quote_date.strftime('%Y%m%d')}.pdf"
-
-    if missing_ipids:
-        st.warning("⚠️ Missing IPID files in assets/ipid:\n- " + "\n- ".join(missing_ipids))
-
-    st.success("✅ PDF ready! Download or send via email below.")
-    st.download_button(
-        "📥 Download Final PDF (Quote + IPID)",
-        data=final_pdf_bytes,
-        file_name=filename,
-        mime="application/pdf",
-        use_container_width=True
-    )
+    except PDFError as e:
+        st.error(f"❌ PDF generation failed: {e}")
+        logger.error(f"PDF error: {e}", exc_info=True)
+    except ValidationError as e:
+        st.error(f"❌ Validation error: {e}")
+        logger.error(f"Validation error: {e}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        logger.error(f"Unexpected error generating PDF: {e}", exc_info=True)
 
 st.divider()
 
 # --------------------------
-# Send Email
+# SEND EMAIL
 # --------------------------
-st.subheader("📧 Send Quote via Email (Professional Sales Email)")
+st.subheader("📧 Send Quote via Email")
 
 st.markdown("""
-<div style="padding:14px;background:#EFF6FF;border-left:4px solid #1E4FA8;border-radius:8px;margin-bottom:16px;">
-<strong>📬 Email Strategy:</strong><br>
-• Sent to client email (from client data above)<br>
-• Automatically CC'd to <strong>xiatropoulos@gmail.com</strong><br>
-• Professional sales-driven template designed to convert<br>
-• Includes clear next steps and value propositions
+<div class="security-indicator security-ok" style="margin-bottom:16px;">
+<strong>📬 Secure Email Delivery</strong><br>
+• Professional sales email template<br>
+• Automatically CC'd to <strong>""" + ADVISOR_EMAIL + """</strong><br>
+• Rate limited to prevent abuse<br>
+• TLS encrypted transmission
 </div>
 """, unsafe_allow_html=True)
 
-recipient = st.text_input("📧 Recipient email", value=(client_email or "").strip(), placeholder="client@example.com")
+# Check if PDF is generated
+if not st.session_state.pdf_generated:
+    st.warning("⚠️ Please generate the PDF first before sending email")
+else:
+    recipient = st.text_input(
+        "📧 Recipient email *",
+        value=client_email.strip() if client_email else "",
+        placeholder="client@example.com",
+        max_chars=254
+    )
 
-default_subject = f"🐾 PETSHEALTH – Η Προσωπική σας Προσφορά Ασφάλισης ({client_name or 'Client'})"
-subject = st.text_input("📋 Subject", value=default_subject)
+    # Real-time email validation
+    email_valid = False
+    if recipient:
+        if validate_email(recipient):
+            st.success("✅ Valid email address")
+            email_valid = True
+        else:
+            st.error("❌ Invalid email address format")
 
-default_body = sales_email_body_gr(
-    client_name=client_name,
-    pet_mode=quote_mode,
-    pet_name=pet_name,
-    pet_count=int(pet_count),
-    total_price=f"{total:.2f} €",
-    selected_plans=selected_plans,
-)
-body = st.text_area("📝 Email body (SALES-DRIVEN – editable)", value=default_body, height=350)
+    # Email customization
+    from email_utils import plan_names_for_email
 
-send_btn = st.button("🚀 Send Professional Quote Email", type="primary", use_container_width=True,
-                     disabled=(final_pdf_bytes is None))
 
-if send_btn:
-    if not recipient or not is_valid_email(recipient):
-        st.error("❌ Please enter a valid recipient email address.")
-    elif final_pdf_bytes is None or filename is None:
-        st.error("❌ Generate the PDF first before sending.")
-    else:
+    def plan_names_for_email(plans):
+        if not plans:
+            return "—"
+        if len(plans) == 1:
+            return "PET CARE PLUS" if "INTERLIFE" in plans[0] else "EUROLIFE My Happy Pet"
+        return "PET CARE PLUS + EUROLIFE My Happy Pet"
+
+
+    default_subject = f"🐾 PETSHEALTH – Η Προσωπική σας Προσφορά Ασφάλισης ({client_name or 'Client'})"
+    subject = st.text_input(
+        "📋 Email subject",
+        value=default_subject,
+        max_chars=200
+    )
+
+
+    # Generate professional email body
+    def generate_email_body():
+        client_display = client_name.strip() or "Αγαπητέ/ή"
+
+        if "Bulk" in quote_mode:
+            pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία των {pet_count} κατοικιδίων σας."
+            coverage_line = f"📋 **Συνολικό ετήσιο κόστος:** {total:.2f} €"
+        else:
+            pet_display = pet_name.strip() or "το αγαπημένο σας κατοικίδιο"
+            pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία του {pet_display}."
+            coverage_line = f"📋 **Ετήσιο κόστος για τον/την {pet_display}:** {total:.2f} €"
+
+        plans_display = plan_names_for_email(selected_plans)
+
+        return f"""Καλησπέρα {client_display},
+
+{pet_intro}
+
+Επισυνάπτω την προσωπική σας προσφορά με όλες τις λεπτομέρειες κάλυψης.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 **Η ΠΡΟΤΑΣΗ ΣΑΣ**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📦 **Επιλεγμένα προγράμματα:** {plans_display}
+{coverage_line}
+
+✅ **Κύρια οφέλη:**
+   • Προστασία από απρόβλεπτα περιστατικά & ασθένειες
+   • Κάλυψη νοσοκομειακών δαπανών & διαγνωστικών
+   • Ηρεμία & οικονομική ασφάλεια
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📎 **ΣΤΟ ΕΠΙΣΥΝΑΠΤΟΜΕΝΟ PDF:**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• Αναλυτική κάλυψη κάθε προγράμματος
+• Τι καλύπτεται & τι όχι (με πλήρη διαφάνεια)
+• Περίοδοι αναμονής & όροι ασφάλισης
+• Επίσημα έγγραφα IPID
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 **ΕΠΟΜΕΝΑ ΒΗΜΑΤΑ:**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1️⃣ **Επιβεβαιώστε τα στοιχεία microchip**
+2️⃣ **Επιλέξτε το πρόγραμμα που σας ταιριάζει**
+3️⃣ **Ολοκληρώστε την αίτηση online ή με τη βοήθειά μας**
+
+Είμαι στη διάθεσή σας για οποιαδήποτε ερώτηση.
+
+**Με εκτίμηση,**
+
+**Chris Iatropoulos**  
+*Pet Insurance Advisor | CII Certified (PL4, W01)*
+
+📧 info@petshealth.gr  
+📱 +30 211 700 533  
+🌐 www.petshealth.gr
+
+*"Because we care for your pets as much as you do"* 🐾
+"""
+
+
+    body = st.text_area(
+        "📝 Email body (editable)",
+        value=generate_email_body(),
+        max_chars=5000,
+        height=350,
+        help="Professional sales-driven template"
+    )
+
+    # Send button
+    send_btn = st.button(
+        "🚀 Send Professional Quote Email",
+        type="primary",
+        use_container_width=True,
+        disabled=(not email_valid or not st.session_state.pdf_generated)
+    )
+
+    if send_btn:
         try:
             with st.spinner("📤 Sending professional quote email..."):
-                send_quote_email(
+                result = send_quote_email(
                     to_email=recipient,
                     subject=subject.strip(),
                     body_text=body.strip(),
-                    pdf_bytes=final_pdf_bytes,
-                    filename=filename,
-                    cc_email=ADVISOR_CC,
+                    pdf_bytes=st.session_state.final_pdf_bytes,
+                    filename=st.session_state.final_filename,
+                    cc_email=ADVISOR_EMAIL,
+                    check_rate_limit=True,
                 )
-            st.success(f"✅ Email sent successfully!\n\n📧 **To:** {recipient}\n📋 **CC:** {ADVISOR_CC}")
+
+            st.success(f"""
+✅ **Email sent successfully!**
+
+📧 **To:** {result['to']}  
+📋 **CC:** {result['cc']}  
+📦 **Size:** {result['size_mb']}MB  
+⏱️ **Time:** {result['elapsed_seconds']}s
+
+🔒 **Rate limit remaining:** {get_rate_limit_status()['remaining']} sends
+            """)
             st.balloons()
+
+        except RateLimitError as e:
+            st.error(f"❌ **Rate limit exceeded**\n\n{str(e)}")
+        except EmailError as e:
+            st.error(f"❌ **Email send failed**\n\n{str(e)}\n\nPlease check your SMTP settings.")
+            logger.error(f"Email error: {e}", exc_info=True)
         except Exception as e:
-            st.error(f"❌ Email send failed: {e}\n\nPlease check your SMTP settings in Streamlit Secrets.")
+            st.error(f"❌ **Unexpected error:** {str(e)}")
+            logger.error(f"Unexpected email error: {e}", exc_info=True)
+
+# --------------------------
+# FOOTER
+# --------------------------
+st.divider()
+st.caption("🛡️ **PETSHEALTH Quote Engine v1.0** | Secure • Professional • Compliant")
+st.caption(
+    f"Rate limits: {get_rate_limit_status()['remaining']}/{get_rate_limit_status()['max_per_hour']} emails remaining")
