@@ -1,14 +1,16 @@
 import io
 import os
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-# Platypus for safe wrapping / layout on Page 3
+# Platypus for safe wrapping (Page 3)
 from reportlab.platypus import Paragraph, Frame, KeepInFrame, ListFlowable, ListItem
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT
@@ -39,6 +41,9 @@ BRAND = {
     "muted": colors.HexColor("#6B7280"),
 }
 
+# --------------------------
+# Utilities
+# --------------------------
 def _wrap_words(text: str, max_chars: int) -> list[str]:
     words = (text or "").split()
     if not words:
@@ -70,7 +75,7 @@ def _footer(c: canvas.Canvas, W):
     c.drawString(14*mm, 12*mm, "PETSHEALTH | www.petshealth.gr | info@petshealth.gr")
     c.drawRightString(W - 14*mm, 12*mm, "Because we care for your pets as much as you do")
 
-def _draw_bullet_block(c, x, y, items, max_chars=62, leading=11, font=BASE_FONT, size=9):
+def _draw_bullet_block(c, x, y, items, max_chars=52, leading=9.2, font=BASE_FONT, size=8.0):
     c.setFont(font, size)
     c.setFillColor(BRAND["dark"])
     yy = y
@@ -81,56 +86,145 @@ def _draw_bullet_block(c, x, y, items, max_chars=62, leading=11, font=BASE_FONT,
             yy -= leading
     return yy
 
+# --------------------------
+# Polaroids (2 per page)
+# --------------------------
+def _draw_polaroid(c, img_bytes, x, y, w, h, angle=0):
+    if not img_bytes:
+        return
+
+    pad = 3*mm
+    bottom_extra = 7*mm  # polaroid white bottom
+    try:
+        img = ImageReader(io.BytesIO(img_bytes))
+    except Exception:
+        return
+
+    c.saveState()
+    cx = x + w/2
+    cy = y + h/2
+    c.translate(cx, cy)
+    c.rotate(angle)
+    c.translate(-cx, -cy)
+
+    # shadow
+    c.setFillColor(colors.Color(0, 0, 0, alpha=0.12))
+    c.roundRect(x + 1.2*mm, y - 1.2*mm, w, h, 6, stroke=0, fill=1)
+
+    # frame
+    c.setFillColor(colors.white)
+    c.setStrokeColor(BRAND["border"])
+    c.roundRect(x, y, w, h, 7, stroke=1, fill=1)
+
+    # photo window
+    img_x = x + pad
+    img_y = y + pad + bottom_extra
+    img_w = w - 2*pad
+    img_h = h - 2*pad - bottom_extra
+
+    c.drawImage(img, img_x, img_y, img_w, img_h, preserveAspectRatio=True, anchor='c', mask='auto')
+
+    # caption
+    c.setFillColor(BRAND["muted"])
+    c.setFont(BASE_FONT, 7.4)
+    c.drawString(x + pad, y + 2.4*mm, "PETSHEALTH")
+
+    c.restoreState()
+
+def _polaroids_for_page(data: dict, page_index: int) -> list[bytes]:
+    imgs = data.get("polaroid_images", []) or []
+    if not imgs:
+        return []
+    a = imgs[(page_index - 1) % len(imgs)]
+    b = imgs[(page_index) % len(imgs)] if len(imgs) > 1 else None
+    return [a] + ([b] if b else [])
+
+def _draw_page_polaroids(c, W, H, data: dict, page_index: int):
+    pimgs = _polaroids_for_page(data, page_index)
+    if not pimgs:
+        return
+
+    # Place them low, above footer, so they never collide with content
+    y = 18*mm
+    w = 40*mm
+    h = 48*mm
+
+    # left
+    _draw_polaroid(c, pimgs[0], 14*mm, y, w, h, angle=-6)
+
+    # right
+    if len(pimgs) > 1:
+        _draw_polaroid(c, pimgs[1], W - 14*mm - w, y, w, h, angle=6)
+    else:
+        _draw_polaroid(c, pimgs[0], W - 14*mm - w, y, w, h, angle=5)
+
+# --------------------------
+# Page 2 card tuned for narrow columns
+# --------------------------
 def _plan_card(c, x, y_top, w, h, title, subtitle, blocks: list[tuple[str, list[str]]]):
-    # card
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(colors.white)
     c.roundRect(x, y_top - h, w, h, 10, stroke=1, fill=1)
-    # top band
+
     c.setFillColor(BRAND["bg"])
     c.roundRect(x, y_top - 14*mm, w, 14*mm, 10, stroke=0, fill=1)
     c.setFillColor(BRAND["blue"])
     c.roundRect(x, y_top - 4, w, 4, 2, stroke=0, fill=1)
 
-    # title/subtitle
     c.setFillColor(BRAND["dark"])
-    c.setFont(BOLD_FONT, 10.5)
-    c.drawString(x + 6*mm, y_top - 8*mm, title)
+    c.setFont(BOLD_FONT, 10.0)
+    c.drawString(x + 6*mm, y_top - 8.2*mm, title)
+
     c.setFillColor(BRAND["muted"])
-    c.setFont(BASE_FONT, 8.6)
-    c.drawString(x + 6*mm, y_top - 12*mm, subtitle)
+    c.setFont(BASE_FONT, 8.0)
+    c.drawString(x + 6*mm, y_top - 12.3*mm, subtitle)
 
     yy = y_top - 18*mm
-    for section_title, bullet_items in blocks:
-        c.setFillColor(BRAND["dark"])
-        c.setFont(BOLD_FONT, 9.7)
-        c.drawString(x + 6*mm, yy, section_title)
-        yy -= 6
-        yy = _draw_bullet_block(c, x + 8*mm, yy, bullet_items, max_chars=60, leading=10, font=BASE_FONT, size=8.8)
-        yy -= 6
 
-def _platypus_bullets(items, style, bullet_style, max_items=None):
-    items = items or []
-    if max_items:
-        items = items[:max_items]
+    for section_title, bullet_items in blocks:
+        bullet_items = (bullet_items or [])[:6]  # max bullets per section
+
+        c.setFillColor(BRAND["dark"])
+        c.setFont(BOLD_FONT, 9.0)
+        c.drawString(x + 6*mm, yy, section_title)
+        yy -= 5
+
+        yy = _draw_bullet_block(
+            c,
+            x + 8*mm,
+            yy,
+            bullet_items,
+            max_chars=52,
+            leading=9.2,
+            font=BASE_FONT,
+            size=8.0
+        )
+        yy -= 5
+
+def _platypus_bullets(items, style, max_items=10):
+    items = (items or [])[:max_items]
     flow = []
     for it in items:
         p = Paragraph(str(it), style)
         flow.append(ListItem(p, leftIndent=10, bulletText="•", value="•"))
-    return ListFlowable(flow, bulletType="bullet", leftIndent=10, bulletFontName=bullet_style.fontName, bulletFontSize=bullet_style.fontSize)
+    return ListFlowable(flow, bulletType="bullet", leftIndent=10)
 
+# --------------------------
+# Main builder
+# --------------------------
 def build_quote_pdf(data: dict) -> bytes:
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     W, H = A4
 
     selected_plans = data.get("selected_plans", []) or []
+    mode = data.get("quote_mode", "")
+    pet_count = int(data.get("pet_count", 1) or 1)
 
     # ---------------- PAGE 1 ----------------
     c.setFillColor(BRAND["dark"])
     c.rect(0, H - 28*mm, W, 28*mm, stroke=0, fill=1)
 
-    # left title
     c.setFillColor(colors.white)
     c.setFont(BOLD_FONT, 15)
     c.drawString(14*mm, H - 16*mm, "PETSHEALTH – Pet Insurance Quotation")
@@ -139,12 +233,12 @@ def build_quote_pdf(data: dict) -> bytes:
     c.setFillColor(colors.HexColor("#E5E7EB"))
     c.drawRightString(W - 14*mm, H - 22*mm, f"Quote Date: {data.get('quote_date','')}")
 
-    y = H - 40*mm
+    y = H - 42*mm
 
-    # summary box
+    # Summary box
     box_x = 14*mm
     box_w = W - 28*mm
-    box_h = 44*mm
+    box_h = 46*mm if "Bulk" in mode else 44*mm
 
     c.setFillColor(BRAND["bg"])
     c.roundRect(box_x, y - box_h, box_w, box_h, 10, stroke=0, fill=1)
@@ -163,11 +257,25 @@ def build_quote_pdf(data: dict) -> bytes:
 
     c.setFillColor(BRAND["muted"])
     c.setFont(BASE_FONT, 9.5)
-    c.drawRightString(box_x + box_w - 8*mm, y - 18*mm, f"Pet: {data.get('pet_name','')} ({data.get('pet_species','')})")
-    c.drawRightString(box_x + box_w - 8*mm, y - 26*mm, f"Breed: {data.get('pet_breed','')}")
-    c.drawRightString(box_x + box_w - 8*mm, y - 34*mm, f"DOB: {data.get('pet_dob','')} | Microchip: {data.get('pet_microchip','')}")
 
-    # solution + pricing
+    if "Bulk" in mode:
+        c.drawRightString(box_x + box_w - 8*mm, y - 18*mm, f"Pets: {pet_count} (Bulk quote)")
+        bs = (data.get("bulk_summary") or "").strip()
+        if bs:
+            c.setFont(BASE_FONT, 9)
+            yyb = y - 42*mm
+            for ln in bs.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                c.drawString(box_x + 8*mm, yyb, ln)
+                yyb -= 11
+    else:
+        c.drawRightString(box_x + box_w - 8*mm, y - 18*mm, f"Pet: {data.get('pet_name','')} ({data.get('pet_species','')})")
+        c.drawRightString(box_x + box_w - 8*mm, y - 26*mm, f"Breed: {data.get('pet_breed','')}")
+        c.drawRightString(box_x + box_w - 8*mm, y - 34*mm, f"DOB: {data.get('pet_dob','')} | Microchip: {data.get('pet_microchip','')}")
+
+    # Proposed solution
     y2 = y - box_h - 10*mm
     c.setFillColor(BRAND["dark"])
     c.setFont(BOLD_FONT, 12)
@@ -182,6 +290,7 @@ def build_quote_pdf(data: dict) -> bytes:
         c.drawString(14*mm, y2, f"• {data.get('plan_2_name','')} – {data.get('plan_2_provider','')}")
         y2 -= 6*mm
 
+    # Pricing card
     y3 = y2 - 10*mm
     card_x = 14*mm
     card_w = W - 28*mm
@@ -202,14 +311,14 @@ def build_quote_pdf(data: dict) -> bytes:
         c.setFillColor(BRAND["muted"])
         c.drawString(card_x + 8*mm, yy, data.get("plan_1_name",""))
         c.setFillColor(BRAND["dark"])
-        c.drawRightString(card_x + card_w - 8*mm, yy, str(data.get("plan_1_price","")))
+        c.drawRightString(card_x + card_w - 8*mm, yy, str(data.get("plan_1_price_total", data.get("plan_1_price",""))))
         yy -= 7*mm
 
     if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
         c.setFillColor(BRAND["muted"])
         c.drawString(card_x + 8*mm, yy, data.get("plan_2_name",""))
         c.setFillColor(BRAND["dark"])
-        c.drawRightString(card_x + card_w - 8*mm, yy, str(data.get("plan_2_price","")))
+        c.drawRightString(card_x + card_w - 8*mm, yy, str(data.get("plan_2_price_total", data.get("plan_2_price",""))))
 
     c.setFillColor(BRAND["blue"])
     c.roundRect(card_x, y3 - card_h, card_w, 8*mm, 10, stroke=0, fill=1)
@@ -230,6 +339,8 @@ def build_quote_pdf(data: dict) -> bytes:
         c.drawString(14*mm, y4, ln)
         y4 -= 12
 
+    # Polaroids + footer
+    _draw_page_polaroids(c, W, H, data, page_index=1)
     _footer(c, W)
 
     # ---------------- PAGE 2 ----------------
@@ -242,9 +353,7 @@ def build_quote_pdf(data: dict) -> bytes:
     c.drawString(14*mm, top, "Coverage Details (Summary)")
     top -= 8*mm
 
-    # Decide layout: 1 or 2 cards
     if len(selected_plans) == 1:
-        # Single full-width card
         x = 14*mm
         w = W - 28*mm
         h = 165*mm
@@ -271,7 +380,6 @@ def build_quote_pdf(data: dict) -> bytes:
         _plan_card(c, x, y_top, w, h, title, subtitle, blocks)
 
     else:
-        # Two-column cards
         gap = 8*mm
         card_w = (W - 28*mm - gap) / 2
         card_h = 165*mm
@@ -301,13 +409,13 @@ def build_quote_pdf(data: dict) -> bytes:
             ]
             _plan_card(c, x2, y_top, card_w, card_h, title, subtitle, blocks)
 
+    _draw_page_polaroids(c, W, H, data, page_index=2)
     _footer(c, W)
 
-    # ---------------- PAGE 3 (SAFE LAYOUT) ----------------
+    # ---------------- PAGE 3 ----------------
     c.showPage()
     _header(c, W, H, "About & Official Highlights")
 
-    # Styles
     body_style = ParagraphStyle(
         name="Body",
         fontName=BASE_FONT,
@@ -324,28 +432,11 @@ def build_quote_pdf(data: dict) -> bytes:
         textColor=BRAND["dark"],
         alignment=TA_LEFT,
     )
-    title_style = ParagraphStyle(
-        name="Title",
-        fontName=BOLD_FONT,
-        fontSize=14,
-        leading=16,
-        textColor=BRAND["dark"],
-        alignment=TA_LEFT,
-    )
-    sec_style = ParagraphStyle(
-        name="Sec",
-        fontName=BOLD_FONT,
-        fontSize=11.5,
-        leading=14,
-        textColor=BRAND["dark"],
-        alignment=TA_LEFT,
-    )
 
-    # Page 3 layout boxes
     margin_x = 14*mm
     top_y = H - 30*mm
 
-    # Box 1: About
+    # About box
     box1_h = 58*mm
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(BRAND["bg"])
@@ -357,15 +448,12 @@ def build_quote_pdf(data: dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(margin_x + 6*mm, top_y - 12*mm, "About the Advisor")
 
-    bio = (data.get("about_bio") or "").strip()
-    if not bio:
-        bio = "Add your advisor bio in the app."
-
+    bio = (data.get("about_bio") or "").strip() or "Add your advisor bio in the app."
     bio_par = Paragraph(bio.replace("\n", "<br/>"), body_style)
     bio_frame = Frame(margin_x + 6*mm, top_y - box1_h + 8*mm, W - 2*margin_x - 12*mm, box1_h - 22*mm, showBoundary=0)
     bio_frame.addFromList([KeepInFrame(W - 2*margin_x - 12*mm, box1_h - 22*mm, [bio_par], mode="shrink")], c)
 
-    # Box 2: Credentials
+    # Credentials box
     box2_top = top_y - box1_h - 10*mm
     box2_h = 32*mm
     c.setStrokeColor(BRAND["border"])
@@ -376,17 +464,14 @@ def build_quote_pdf(data: dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(margin_x + 6*mm, box2_top - 10*mm, "Credentials (CII)")
 
-    cii = data.get("cii_titles", []) or []
-    if not cii:
-        cii = ["(Add CII titles in the app)"]
-
-    cii_flow = _platypus_bullets(cii, small_style, small_style, max_items=6)
+    cii = data.get("cii_titles", []) or ["(Add CII titles in the app)"]
+    cii_flow = _platypus_bullets(cii, small_style, max_items=6)
     cii_frame = Frame(margin_x + 6*mm, box2_top - box2_h + 6*mm, W - 2*margin_x - 12*mm, box2_h - 18*mm, showBoundary=0)
     cii_frame.addFromList([KeepInFrame(W - 2*margin_x - 12*mm, box2_h - 18*mm, [cii_flow], mode="shrink")], c)
 
-    # Box 3: Official highlights two columns
+    # Official highlights (shorter box to leave space for polaroids)
     box3_top = box2_top - box2_h - 10*mm
-    box3_h = 78*mm
+    box3_h = 70*mm
 
     c.setFont(BOLD_FONT, 12.5)
     c.setFillColor(BRAND["dark"])
@@ -396,7 +481,7 @@ def build_quote_pdf(data: dict) -> bytes:
     gap = 8*mm
     col_w = (W - 2*margin_x - gap) / 2
 
-    # Left (EUROLIFE)
+    # Left EUROLIFE
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(colors.white)
     c.roundRect(margin_x, box3_top - box3_h, col_w, box3_h, 10, stroke=1, fill=1)
@@ -407,14 +492,12 @@ def build_quote_pdf(data: dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(margin_x + 6*mm, box3_top - 8*mm, "EUROLIFE – My Happy Pet")
 
-    eu = data.get("official_eurolife", []) or []
-    if not eu:
-        eu = ["(Optional) Use 'Load official highlights' in the app."]
-    eu_flow = _platypus_bullets(eu, small_style, small_style, max_items=10)
+    eu = data.get("official_eurolife", []) or ["(Optional) Use 'Load official highlights' in the app."]
+    eu_flow = _platypus_bullets(eu, small_style, max_items=8)
     eu_frame = Frame(margin_x + 6*mm, box3_top - box3_h + 6*mm, col_w - 12*mm, box3_h - 20*mm, showBoundary=0)
     eu_frame.addFromList([KeepInFrame(col_w - 12*mm, box3_h - 20*mm, [eu_flow], mode="shrink")], c)
 
-    # Right (INTERLIFE)
+    # Right INTERLIFE
     xr = margin_x + col_w + gap
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(colors.white)
@@ -426,13 +509,12 @@ def build_quote_pdf(data: dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(xr + 6*mm, box3_top - 8*mm, "INTERLIFE – PET CARE")
 
-    it = data.get("official_interlife", []) or []
-    if not it:
-        it = ["(Optional) Use 'Load official highlights' in the app."]
-    it_flow = _platypus_bullets(it, small_style, small_style, max_items=10)
+    it = data.get("official_interlife", []) or ["(Optional) Use 'Load official highlights' in the app."]
+    it_flow = _platypus_bullets(it, small_style, max_items=8)
     it_frame = Frame(xr + 6*mm, box3_top - box3_h + 6*mm, col_w - 12*mm, box3_h - 20*mm, showBoundary=0)
     it_frame.addFromList([KeepInFrame(col_w - 12*mm, box3_h - 20*mm, [it_flow], mode="shrink")], c)
 
+    _draw_page_polaroids(c, W, H, data, page_index=3)
     _footer(c, W)
 
     c.save()

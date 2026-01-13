@@ -3,6 +3,7 @@ import os
 import re
 import html as ihtml
 from datetime import date
+from urllib.parse import urljoin
 
 import streamlit as st
 import requests
@@ -11,74 +12,106 @@ from pypdf import PdfReader, PdfWriter
 
 from pdf_builder import build_quote_pdf
 
+# --------------------------
+# PAGE CONFIG
+# --------------------------
 st.set_page_config(page_title="PETSHEALTH – Pet Quote Engine", page_icon="🐾", layout="wide")
 
 # --------------------------
-# CONFIG
+# URLs
 # --------------------------
+PETSHEALTH_HOME_URL = "https://www.petshealth.gr/"
 PETSHEALTH_TEAM_URL = "https://www.petshealth.gr/petshealt-team"
 EUROLIFE_URL = "https://www.eurolife.gr/el-GR/proionta/idiotes/katoikidio/my-happy-pet"
 INTERLIFE_URL = "https://www.interlife-programs.gr/asfalisi/eidika-programmata/#petcare"
 
-# Put these PDFs in your repo
+# --------------------------
+# IPID paths (must exist in repo)
+# --------------------------
 IPID_MAP = {
     "PET CARE PLUS (INTERLIFE)": "assets/ipid/PETCARE_PLUS_IPID.pdf",
     "EUROLIFE My Happy Pet (SAFE PET SYSTEM)": "assets/ipid/EUROLIFE_MY_HAPPY_PET_IPID.pdf",
 }
-
 PLAN_KEYS = list(IPID_MAP.keys())
 
 # --------------------------
-# HELPERS
+# Helpers
 # --------------------------
 def _clean_txt(t: str) -> str:
     t = (t or "").strip()
-    t = re.sub(r"\s+", " ", t)
-    t = ihtml.unescape(ihtml.unescape(t))  # double unescape for stubborn entities
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    t = ihtml.unescape(ihtml.unescape(t))  # decode &alpha; etc if present
     return t.strip()
 
-@st.cache_data(show_spinner=False, ttl=60*60)
-def fetch_highlights(url: str, max_items: int = 10) -> list[str]:
-    """Extract headings/list items/meaningful paragraphs from a page (lightweight)."""
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def fetch_highlights(url: str, max_items: int = 8) -> list[str]:
     r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (PETSHEALTHQuote/1.0)"})
     r.raise_for_status()
-
     soup = BeautifulSoup(r.text, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
     candidates = []
 
-    # Prefer structured content first
     for tag in soup.find_all(["h1", "h2", "h3", "li"]):
         txt = _clean_txt(tag.get_text(" ", strip=True))
-        if 35 <= len(txt) <= 220:
+        if 28 <= len(txt) <= 240:
             candidates.append(txt)
 
-    # Then a few paragraphs if needed
     if len(candidates) < max_items:
         for tag in soup.find_all("p"):
             txt = _clean_txt(tag.get_text(" ", strip=True))
-            if 60 <= len(txt) <= 280:
+            if 60 <= len(txt) <= 300:
                 candidates.append(txt)
             if len(candidates) >= max_items * 3:
                 break
 
-    # de-dup
     out, seen = [], set()
     for c in candidates:
         k = c.lower()
         if k in seen:
             continue
         seen.add(k)
-        # filter boilerplate
-        if any(b in k for b in ["cookie", "privacy", "javascript", "©", "all rights", "newsletter"]):
+        if any(b in k for b in ["cookie", "privacy", "javascript", "newsletter", "©", "all rights"]):
             continue
         out.append(c)
         if len(out) >= max_items:
             break
-
     return out
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def fetch_site_images(url: str, limit: int = 18) -> list[str]:
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    imgs = []
+    for img in soup.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if not src:
+            continue
+        full = urljoin(url, src)
+        low = full.lower()
+        # keep only likely renderable formats
+        if any(ext in low for ext in [".png", ".jpg", ".jpeg", ".webp"]):
+            imgs.append(full)
+
+    out, seen = [], set()
+    for u in imgs:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+        if len(out) >= limit:
+            break
+    return out
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def download_image_bytes(url: str) -> bytes:
+    r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    return r.content
 
 def lines(txt: str) -> list[str]:
     return [x.strip() for x in (txt or "").splitlines() if x.strip()]
@@ -86,14 +119,14 @@ def lines(txt: str) -> list[str]:
 def merge_quote_with_ipids(quote_pdf_bytes: bytes, ipid_paths: list[str]) -> bytes:
     writer = PdfWriter()
 
-    # Quote
     quote_reader = PdfReader(io.BytesIO(quote_pdf_bytes))
     for p in quote_reader.pages:
         writer.add_page(p)
 
-    # IPIDs (each file is already its own pages)
     for pth in ipid_paths:
-        if not pth or not os.path.exists(pth):
+        if not pth:
+            continue
+        if not os.path.exists(pth):
             continue
         rdr = PdfReader(pth)
         for pg in rdr.pages:
@@ -104,13 +137,13 @@ def merge_quote_with_ipids(quote_pdf_bytes: bytes, ipid_paths: list[str]) -> byt
     return out.getvalue()
 
 # --------------------------
-# UI HEADER
+# Header
 # --------------------------
 st.markdown(
     """
     <div style="padding:14px 18px;border-radius:14px;background:#111827;color:white;">
       <div style="font-size:22px;font-weight:800;">PETSHEALTH – PDF Quote Auto-Generator</div>
-      <div style="opacity:0.85;">Client & Pet summary • Coverage cards • IPID pages • Greek Unicode ready</div>
+      <div style="opacity:0.85;">Client & Pet summary • Coverage cards • Bulk quotes • Polaroids • IPID pages</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -118,10 +151,11 @@ st.markdown(
 st.write("")
 
 # --------------------------
-# SIDEBAR: PLAN SELECTION + IPID
+# Sidebar Settings
 # --------------------------
 with st.sidebar:
     st.subheader("Quote Settings")
+
     selected_plans = st.multiselect(
         "Select plan(s) to include",
         PLAN_KEYS,
@@ -129,66 +163,82 @@ with st.sidebar:
     )
 
     include_ipid = st.toggle("Append IPID pages (recommended)", value=True)
-
-    st.caption("IPID pages are appended at the end of the final PDF, based on selected plans.")
+    st.caption("IPID pages are appended at the end based on selected plans.")
 
 # --------------------------
-# CLIENT / PET
+# Client / Pets
 # --------------------------
-colA, colB = st.columns(2, gap="large")
+st.subheader("Client & Pets")
 
-with colA:
-    st.subheader("Client Details")
+c1, c2 = st.columns([1, 1], gap="large")
+with c1:
+    st.markdown("#### Client Details")
     client_name = st.text_input("Client Name", value="")
     client_phone = st.text_input("Phone", value="")
     client_email = st.text_input("Email", value="")
 
-with colB:
-    st.subheader("Pet Details")
+with c2:
+    st.markdown("#### Quote Mode")
+    quote_mode = st.radio(
+        "Mode",
+        ["Detailed (single pet)", "Bulk (number of pets)"],
+        horizontal=True
+    )
+
+    pet_count = 1
+    bulk_summary = ""
+    if quote_mode == "Bulk (number of pets)":
+        pet_count = int(st.number_input("Number of pets", min_value=1, value=2, step=1))
+        bulk_summary = st.text_area(
+            "Bulk description (optional)",
+            value="• Έχω 6 σκυλιά\n• Όλα είναι ημίαιμα\n• Βάρος: 20–40 κιλά\n• Ηλικίες: 2 έως 5 ετών\n• Τοποθεσία: Αθήνα\n• Όλα έχουν microchip",
+            height=120
+        )
+    else:
+        pet_count = 1
+
+st.write("")
+st.markdown("#### Pet Details (for Detailed mode)")
+p1, p2, p3 = st.columns(3, gap="large")
+with p1:
     pet_name = st.text_input("Pet Name", value="")
     pet_species = st.selectbox("Species", ["Dog", "Cat"], index=0)
+with p2:
     pet_breed = st.text_input("Breed", value="")
     pet_dob = st.text_input("Date of Birth (dd/mm/yyyy)", value="")
+with p3:
     pet_microchip = st.text_input("Microchip ID", value="")
 
 st.divider()
 
 # --------------------------
-# PRICING (only for selected plans)
+# Plans & Pricing
 # --------------------------
 st.subheader("Plans & Pricing")
 
-pcols = st.columns(2, gap="large")
+pc1, pc2 = st.columns(2, gap="large")
 
-# defaults
-plan_1_name = "PET CARE PLUS"
-plan_1_provider = "INTERLIFE"
-plan_1_price = 189.0
-
-plan_2_name = "EUROLIFE My Happy Pet (SAFE PET SYSTEM)"
-plan_2_provider = "EUROLIFE"
-plan_2_price = 85.0
-
-with pcols[0]:
+with pc1:
     st.markdown("### Plan 1 (Insurance)")
-    plan_1_name = st.text_input("Plan 1 Name", value=plan_1_name)
-    plan_1_provider = st.text_input("Plan 1 Provider", value=plan_1_provider)
-    plan_1_price = st.number_input("Plan 1 Annual Premium (€)", min_value=0.0, value=float(plan_1_price), step=1.0)
+    plan_1_name = st.text_input("Plan 1 Name", value="PET CARE PLUS")
+    plan_1_provider = st.text_input("Plan 1 Provider", value="INTERLIFE")
+    plan_1_price = st.number_input("Plan 1 Annual Premium (€)", min_value=0.0, value=189.0, step=1.0)
 
-with pcols[1]:
+with pc2:
     st.markdown("### Plan 2 (Network)")
-    plan_2_name = st.text_input("Plan 2 Name", value=plan_2_name)
-    plan_2_provider = st.text_input("Plan 2 Provider", value=plan_2_provider)
-    plan_2_price = st.number_input("Plan 2 Annual Premium (€)", min_value=0.0, value=float(plan_2_price), step=1.0)
+    plan_2_name = st.text_input("Plan 2 Name", value="EUROLIFE My Happy Pet (SAFE PET SYSTEM)")
+    plan_2_provider = st.text_input("Plan 2 Provider", value="EUROLIFE")
+    plan_2_price = st.number_input("Plan 2 Annual Premium (€)", min_value=0.0, value=85.0, step=1.0)
 
 quote_date = st.date_input("Quote Date", value=date.today())
 
-# compute total based on selection
+mult = int(pet_count) if quote_mode == "Bulk (number of pets)" else 1
+
 total = 0.0
 if "PET CARE PLUS (INTERLIFE)" in selected_plans:
-    total += float(plan_1_price)
+    total += float(plan_1_price) * mult
 if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
-    total += float(plan_2_price)
+    total += float(plan_2_price) * mult
 
 st.metric("Total Annual Premium", f"{total:.2f} €")
 
@@ -201,7 +251,7 @@ notes = st.text_area(
 st.divider()
 
 # --------------------------
-# COVERAGE DETAILS (Page 2)
+# Coverage Details (Page 2)
 # --------------------------
 st.subheader("Coverage Details (Page 2)")
 
@@ -300,7 +350,49 @@ with st.expander("EUROLIFE My Happy Pet – Coverage fields", expanded=("EUROLIF
 st.divider()
 
 # --------------------------
-# PAGE 3: BIO + CREDENTIALS + OFFICIAL HIGHLIGHTS
+# Polaroids (2 per page)
+# --------------------------
+st.subheader("Happy Polaroids (2 per page)")
+
+if "site_images" not in st.session_state:
+    st.session_state["site_images"] = []
+
+colA, colB = st.columns([1, 1], gap="large")
+
+with colA:
+    if st.button("Load images from petshealth.gr", use_container_width=True):
+        try:
+            st.session_state["site_images"] = fetch_site_images(PETSHEALTH_HOME_URL, limit=18)
+            st.success("Loaded images from site.")
+        except Exception as e:
+            st.error(f"Failed to load images: {e}")
+
+with colB:
+    st.caption("Pick 2–4 images. PDF will place 2 per page automatically.")
+
+site_images = st.session_state.get("site_images", [])
+selected_image_urls = []
+if site_images:
+    selected_image_urls = st.multiselect(
+        "Select 2–4 site images (recommended)",
+        site_images,
+        default=site_images[:2] if len(site_images) >= 2 else site_images
+    )
+    preview_cols = st.columns(4)
+    for i, u in enumerate((selected_image_urls or [])[:4]):
+        with preview_cols[i]:
+            st.image(u, use_column_width=True)
+
+uploaded = st.file_uploader(
+    "Or upload your own images (JPG/PNG/WebP) – optional",
+    type=["jpg", "jpeg", "png", "webp"],
+    accept_multiple_files=True
+)
+
+st.divider()
+
+# --------------------------
+# About & Official Highlights (Page 3)
 # --------------------------
 st.subheader("About & Official Highlights (Page 3)")
 
@@ -312,12 +404,11 @@ if "official_interlife" not in st.session_state:
     st.session_state.official_interlife = ""
 
 bcol1, bcol2 = st.columns([1, 1], gap="large")
-
 with bcol1:
     if st.button("Load official highlights", use_container_width=True):
         with st.spinner("Fetching content…"):
             try:
-                bio_items = fetch_highlights(PETSHEALTH_TEAM_URL, max_items=8)
+                bio_items = fetch_highlights(PETSHEALTH_TEAM_URL, max_items=6)
                 eu_items = fetch_highlights(EUROLIFE_URL, max_items=8)
                 it_items = fetch_highlights(INTERLIFE_URL, max_items=8)
 
@@ -330,7 +421,7 @@ with bcol1:
                 st.error(f"Failed to load highlights: {e}")
 
 with bcol2:
-    st.caption("Tip: Keep the Bio short (3–6 lines). Highlights work best as bullets.")
+    st.caption("Tip: Bio 3–6 lines. Highlights as bullets work best.")
 
 about_bio = st.text_area("Advisor Bio (editable)", value=st.session_state.official_bio, height=140)
 
@@ -358,22 +449,51 @@ official_interlife = st.text_area(
 st.divider()
 
 # --------------------------
-# GENERATE
+# Generate / Download
 # --------------------------
 generate = st.button("Generate PDF", type="primary", use_container_width=True)
 
 if generate:
-    # Build payload
+    # Build polaroid bytes list:
+    polaroid_bytes = []
+
+    # 1) from selected site urls
+    for u in (selected_image_urls or [])[:4]:
+        try:
+            polaroid_bytes.append(download_image_bytes(u))
+        except Exception:
+            pass
+
+    # 2) from uploads
+    if uploaded:
+        for f in uploaded[:4]:
+            try:
+                polaroid_bytes.append(f.read())
+            except Exception:
+                pass
+
+    # Keep max 6 (enough rotation)
+    polaroid_bytes = polaroid_bytes[:6]
+
     payload = {
+        # client
         "client_name": client_name,
         "client_phone": client_phone,
         "client_email": client_email,
+
+        # quote mode
+        "quote_mode": quote_mode,
+        "pet_count": int(pet_count),
+        "bulk_summary": bulk_summary,
+
+        # pet (for detailed)
         "pet_name": pet_name,
         "pet_species": pet_species,
         "pet_breed": pet_breed,
         "pet_dob": pet_dob,
         "pet_microchip": pet_microchip,
 
+        # plans + pricing
         "plan_1_name": plan_1_name,
         "plan_1_provider": plan_1_provider,
         "plan_1_price": f"{float(plan_1_price):.2f}",
@@ -382,11 +502,14 @@ if generate:
         "plan_2_price": f"{float(plan_2_price):.2f}",
 
         "selected_plans": selected_plans,
+        "price_multiplier": int(mult),
+        "plan_1_price_total": f"{float(plan_1_price) * mult:.2f}",
+        "plan_2_price_total": f"{float(plan_2_price) * mult:.2f}",
         "total_price": f"{total:.2f} €",
         "quote_date": quote_date.strftime("%d/%m/%Y"),
         "notes": notes,
 
-        # plan1 fields
+        # coverage details
         "plan1_limit": locals().get("plan1_limit", ""),
         "plan1_area": locals().get("plan1_area", ""),
         "plan1_key_facts": lines(locals().get("plan1_key_facts_txt", "")),
@@ -394,7 +517,6 @@ if generate:
         "plan1_exclusions": lines(locals().get("plan1_exclusions_txt", "")),
         "plan1_waiting": lines(locals().get("plan1_waiting_txt", "")),
 
-        # plan2 fields
         "plan2_limit": locals().get("plan2_limit", ""),
         "plan2_area": locals().get("plan2_area", ""),
         "plan2_key_facts": lines(locals().get("plan2_key_facts_txt", "")),
@@ -402,15 +524,16 @@ if generate:
         "plan2_exclusions": lines(locals().get("plan2_exclusions_txt", "")),
         "plan2_waiting": lines(locals().get("plan2_waiting_txt", "")),
 
-        # page3
+        # page 3
         "about_bio": about_bio,
         "cii_titles": lines(cii_titles),
-
         "official_eurolife": [x.lstrip("•").strip() for x in lines(official_eurolife)],
         "official_interlife": [x.lstrip("•").strip() for x in lines(official_interlife)],
+
+        # polaroids
+        "polaroid_images": polaroid_bytes,
     }
 
-    # Build quote PDF
     quote_pdf_bytes = build_quote_pdf(payload)
 
     # IPIDs chosen by selected plans
@@ -421,12 +544,13 @@ if generate:
 
     final_pdf_bytes = merge_quote_with_ipids(quote_pdf_bytes, ipid_paths)
 
-    # Warn if IPIDs missing
     missing = [p for p in ipid_paths if p and not os.path.exists(p)]
     if include_ipid and missing:
         st.warning("Some IPID files are missing in assets/ipid. Add them and redeploy:\n- " + "\n- ".join(missing))
 
-    fname = f"PETSHEALTH_Quote_{client_name or 'Client'}_{pet_name or 'Pet'}.pdf".replace(" ", "_")
+    safe_client = (client_name or "Client").replace(" ", "_")
+    safe_pet = (pet_name or ("Bulk" if "Bulk" in quote_mode else "Pet")).replace(" ", "_")
+    fname = f"PETSHEALTH_Quote_{safe_client}_{safe_pet}.pdf"
 
     st.success("PDF ready!")
     st.download_button(
