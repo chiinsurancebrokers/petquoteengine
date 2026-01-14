@@ -11,7 +11,7 @@ from typing import Optional
 from collections import deque
 
 from config import get_smtp_config, MAX_PDF_SIZE_MB, MAX_EMAILS_PER_HOUR
-from validators import validate_email, sanitize_email_header, sanitize_filename
+from input_validators import validate_email, sanitize_email_header, sanitize_filename
 
 # Configure logging
 logger = logging.getLogger(__name__)

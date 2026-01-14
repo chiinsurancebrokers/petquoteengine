@@ -15,7 +15,7 @@ from config import (
     WEB_SCRAPE_MAX_ITEMS,
     WEB_SCRAPE_USER_AGENT,
 )
-from validators import validate_url, sanitize_scraped_text
+from input_validators import validate_url, sanitize_scraped_text
 
 logger = logging.getLogger(__name__)
 

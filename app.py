@@ -14,7 +14,7 @@ from config import (
     PETSHEALTH_HOME_URL, PETSHEALTH_TEAM_URL, EUROLIFE_URL, INTERLIFE_URL,
     MAX_POLAROID_IMAGES,
 )
-from validators import (
+from input_validators import (
     validate_email, validate_phone, validate_date, validate_price, validate_count,
     validate_client_data, sanitize_text_input, sanitize_text_area,
     ValidationError, validate_image_file,
@@ -729,7 +729,7 @@ if generate:
                 final_pdf_bytes = quote_pdf_bytes
 
             # Generate safe filename
-            from validators import sanitize_filename
+            from input_validators import sanitize_filename
 
             safe_client = sanitize_filename(client_name or "Client")
             safe_pet = sanitize_filename(pet_name or ("Bulk" if "Bulk" in quote_mode else "Pet"))
