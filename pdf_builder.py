@@ -1,7 +1,13 @@
 """
-PETSHEALTH Quote Engine - Secure PDF Builder (IMPROVED)
+PETSHEALTH Quote Engine - Secure PDF Builder (IMPROVED v2)
 Professional PDF generation with comprehensive security and validation
-IMPROVEMENTS:
+
+IMPROVEMENTS v2 (2026-01-14):
+- FIXED: Increased line spacing in plan cards bullets (10.5 → 12)
+- FIXED: Better subtitle text wrapping for narrow columns
+- FIXED: Larger "About the Advisor" box to prevent text cutoff
+
+IMPROVEMENTS v1:
 - Increased line spacing in plan cards (page 2)
 - Text wrapping for long subtitles
 - Better layout for dual-column cards
@@ -434,7 +440,7 @@ def _draw_bullet_block(
         x: float, y: float,
         items: list[str],
         max_chars: int = 52,
-        leading: float = 9.2,
+        leading: float = 12,  # FIXED: Increased from 10.5 to 12
         size: float = 8.2
 ) -> float:
     """
@@ -445,7 +451,7 @@ def _draw_bullet_block(
         x, y: Starting position
         items: List of bullet items
         max_chars: Max characters per line
-        leading: Line spacing
+        leading: Line spacing (FIXED: now 12 for better readability)
         size: Font size
 
     Returns:
@@ -480,6 +486,8 @@ def _draw_plan_card(
     """
     Draw a plan coverage card with improved spacing and text wrapping.
 
+    FIXED v2: Better subtitle wrapping for narrow columns
+
     Args:
         c: Canvas object
         x, y_top: Position (top-left corner)
@@ -508,13 +516,17 @@ def _draw_plan_card(
     safe_title = _safe_str(title, max_length=80)
     c.drawString(x + 6 * mm, y_top - 8.2 * mm, safe_title)
 
-    # Subtitle with text wrapping - IMPROVED
+    # Subtitle with text wrapping - FIXED v2: Dynamic calculation
     c.setFillColor(BRAND["muted"])
     c.setFont(BASE_FONT, 7.5)  # Slightly smaller font
     safe_subtitle = _safe_str(subtitle, max_length=150)
 
-    # Calculate max chars based on card width (more conservative)
-    card_w_chars = int((w - 12 * mm) * 0.30)  # More conservative wrapping
+    # FIXED: Better calculation for narrow columns
+    # Use actual card width in mm, divide by average char width (2.2mm for 7.5pt font)
+    usable_width_mm = w - 12 * mm  # Card width minus padding
+    avg_char_width = 2.2  # mm per character at 7.5pt
+    card_w_chars = max(20, int(usable_width_mm / avg_char_width))  # Min 20 chars
+
     subtitle_lines = _wrap_words(safe_subtitle, card_w_chars)
 
     subtitle_y = y_top - 11.5 * mm
@@ -522,7 +534,7 @@ def _draw_plan_card(
         c.drawString(x + 6 * mm, subtitle_y, sub_line)
         subtitle_y -= 8
 
-    # Content sections - INCREASED LINE SPACING
+    # Content sections - INCREASED LINE SPACING (v1)
     yy = y_top - 20 * mm  # Adjusted start position
 
     for section_title, bullet_items in blocks:
@@ -535,11 +547,11 @@ def _draw_plan_card(
         c.drawString(x + 6 * mm, yy, safe_section)
         yy -= 5
 
-        # Bullets with INCREASED line spacing (10.5 instead of 9.4)
+        # Bullets with INCREASED line spacing (12 - FIXED v2)
         yy = _draw_bullet_block(
             c, x + 8 * mm, yy,
             bullet_items,
-            max_chars=52, leading=10.5, size=8.2
+            max_chars=card_w_chars - 5, leading=12, size=8.2  # FIXED: Use dynamic chars
         )
         yy -= 5
 
@@ -877,8 +889,8 @@ def build_quote_pdf(data: dict) -> bytes:
                 title = f"{plan_2_name} ({plan_2_provider})"
                 plan2_limit = _safe_str(data.get("plan2_limit", ""), max_length=40)
                 plan2_area = _safe_str(data.get("plan2_area", ""), max_length=40)
-                # Shorter subtitle to prevent overflow
-                subtitle = f"Unlimited coverage (in-network) | {plan2_area}"
+                # FIXED: Shorter subtitle to prevent overflow in narrow column
+                subtitle = f"Unlimited (in-network) | {plan2_area[:25]}"
                 blocks = [
                     ("Key Facts", data.get("plan2_key_facts", [])),
                     ("Covers (Summary)", data.get("plan2_covers", [])),
@@ -891,7 +903,7 @@ def build_quote_pdf(data: dict) -> bytes:
         _draw_footer(c, W)
 
         # ============================================
-        # PAGE 3: ABOUT & HIGHLIGHTS
+        # PAGE 3: ABOUT & HIGHLIGHTS - FIXED v2
         # ============================================
 
         c.showPage()
@@ -901,8 +913,8 @@ def build_quote_pdf(data: dict) -> bytes:
         body_style = ParagraphStyle(
             name="Body",
             fontName=BASE_FONT,
-            fontSize=10,
-            leading=13,
+            fontSize=9.5,  # FIXED: Slightly smaller for more text
+            leading=12.5,  # FIXED: Adjusted leading
             textColor=BRAND["dark"],
             alignment=TA_LEFT,
         )
@@ -931,8 +943,8 @@ def build_quote_pdf(data: dict) -> bytes:
 
         top_y -= 16 * mm
 
-        # About advisor box
-        box1_h = 56 * mm
+        # About advisor box - FIXED: Increased height
+        box1_h = 65 * mm  # FIXED: Increased from 56mm to 65mm
         c.setStrokeColor(BRAND["border"])
         c.setFillColor(BRAND["bg"])
         c.roundRect(margin_x, top_y - box1_h, W - 2 * margin_x, box1_h, 10, stroke=1, fill=1)
