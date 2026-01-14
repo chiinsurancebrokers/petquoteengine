@@ -1,20 +1,23 @@
 """
-PETSHEALTH Quote Engine - Complete PDF Builder (v5)
+PETSHEALTH Quote Engine - Complete PDF Builder (v5 FINAL)
 
-FINAL VERSION - All fixes implemented:
-✅ Page 1: Complete with Client Summary, Recommended Options, Pricing Card
-✅ Page 2: NO overlap (Platypus Frame + KeepInFrame + soft-breaks)
+All fixes implemented:
+✅ Page 1: Client Summary + Recommended Options + Pricing Card + Notes (safe wrapping)
+✅ Page 2: NO overlap (Platypus Frame + KeepInFrame) — robust layout
+✅ Page 2: Title WRAPS (e.g., “EUROLIFE …”) and never touches border
 ✅ Page 2: Proper wrapping in narrow columns (soft-breaks for / - – |)
 ✅ Page 3: About bio no longer truncated (MAX_BIO_LENGTH = 30,000 chars)
-✅ Page 3: About bio renders normally (no aggressive shrink) + bigger box
-✅ Python 3.9 compatible (Union, List, Dict instead of |)
+✅ Page 3: Bio + Highlights are SAFE for Paragraph (XML-escaped) — no “missing text”
+✅ Page 3: Official highlights ALWAYS render (KeepInFrame shrink) + supports long multiline bullets
+✅ Python 3.9 compatible typing
 
-Drop-in replacement for pdf_builder.py
+Drop-in replacement: pdf_builder.py
 """
 import io
 import logging
+import re
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Union
+from typing import Optional, List, Tuple, Dict, Any
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -78,14 +81,14 @@ BRAND = {
 # --------------------------
 MAX_TEXT_LENGTH = 500
 MAX_BIO_LENGTH = 30000
-MAX_LIST_ITEMS = 20
+MAX_LIST_ITEMS = 40          # allow longer highlight lists
 MAX_POLAROID_IMAGES = 10
 MAX_IMAGE_SIZE_MB = 10
 
 
-# --------------------------
+# ============================================================
 # SAFE HELPERS
-# --------------------------
+# ============================================================
 def _safe_str(text: Optional[str], max_length: int) -> str:
     if text is None:
         return ""
@@ -96,23 +99,30 @@ def _safe_str(text: Optional[str], max_length: int) -> str:
     return text
 
 
-def _safe_list(items: Optional[list], max_items: int) -> List[str]:
-    if not items or not isinstance(items, list):
+def _safe_list(items: Any, max_items: int) -> List[str]:
+    """
+    Accepts list[str] or string; returns clean list[str]
+    (string is split into logical bullets by _coerce_bullets()).
+    """
+    if items is None:
         return []
-    cleaned: List[str] = []
+    if isinstance(items, str):
+        return _coerce_bullets(items, max_items=max_items)
+    if not isinstance(items, list):
+        return []
+    out: List[str] = []
     for it in items[:max_items]:
         s = _safe_str(it, MAX_TEXT_LENGTH)
-        if s:
-            cleaned.append(s)
-    return cleaned
+        if s.strip():
+            out.append(s.strip())
+    return out
 
 
-def _validate_data_dict(data: Dict) -> Dict:
+def _validate_data_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     required = ["client_name", "client_email", "quote_date", "total_price", "selected_plans"]
     for f in required:
         if f not in data:
             raise ValueError(f"Missing required field: {f}")
-
     if not isinstance(data.get("selected_plans"), list):
         raise ValueError("selected_plans must be a list")
 
@@ -136,7 +146,10 @@ def _validate_data_dict(data: Dict) -> Dict:
         "cii_titles", "official_eurolife", "official_interlife",
     ]
     for f in list_fields:
-        if f in data and isinstance(data[f], list):
+        # allow BOTH list[str] and "big string"
+        if f in data and isinstance(data[f], str):
+            data[f] = _coerce_bullets(data[f], max_items=MAX_LIST_ITEMS)
+        elif f in data and isinstance(data[f], list):
             data[f] = [_safe_str(x, MAX_TEXT_LENGTH) for x in data[f][:MAX_LIST_ITEMS] if x]
         else:
             data[f] = data.get(f, []) if isinstance(data.get(f), list) else []
@@ -147,23 +160,53 @@ def _validate_data_dict(data: Dict) -> Dict:
         if not isinstance(imgs, list):
             data["polaroid_images"] = []
         else:
-            out: List[bytes] = []
+            outb: List[bytes] = []
             for b in imgs[:MAX_POLAROID_IMAGES]:
                 if isinstance(b, (bytes, bytearray)) and b:
                     size_mb = len(b) / (1024 * 1024)
                     if size_mb <= MAX_IMAGE_SIZE_MB:
-                        out.append(bytes(b))
-            data["polaroid_images"] = out
+                        outb.append(bytes(b))
+            data["polaroid_images"] = outb
 
     return data
 
 
-# --------------------------
-# WRAPPING HELPERS
-# --------------------------
+# ============================================================
+# TEXT / WRAP / PARAGRAPH SAFETY
+# ============================================================
+def _xml_escape(s: str) -> str:
+    """
+    ReportLab Paragraph uses XML-ish markup.
+    If user text contains &, <, > it can break rendering.
+    """
+    s = "" if s is None else str(s)
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+    )
+
+
+def _soft_breaks(s: str) -> str:
+    """
+    Adds zero-width break opportunities for long tokens inside narrow columns.
+    """
+    if not s:
+        return ""
+    zwsp = "\u200b"
+    s = str(s)
+    return (
+        s.replace("/", f"/{zwsp}")
+         .replace("-", f"-{zwsp}")
+         .replace("–", f"–{zwsp}")
+         .replace("|", f"|{zwsp}")
+    )
+
+
 def _wrap_by_width(text: str, font: str, size: float, max_width: float) -> List[str]:
     """
     Wrap using real measured width (stringWidth). Hard-breaks very long tokens.
+    Used for CANVAS-only lines (titles, etc).
     """
     text = _safe_str(text, max_length=5000)
     if not text.strip():
@@ -209,27 +252,44 @@ def _wrap_by_width(text: str, font: str, size: float, max_width: float) -> List[
     return lines or [""]
 
 
-def _soft_breaks(s: str) -> str:
+def _coerce_bullets(text: str, max_items: int = 40) -> List[str]:
     """
-    Adds zero-width break opportunities so tokens like '.../τιμοκατάλογος'
-    can wrap inside narrow columns.
+    Takes a long multiline string (like the one you pasted) and converts it into
+    bullet items. Continuation lines are appended to the previous bullet with <br/>.
+    Supports:
+    - Lines starting with •, -, *, 1., 2), etc -> new bullet
+    - Otherwise -> continuation of previous bullet
     """
-    if not s:
-        return ""
-    s = str(s)
-    zwsp = "\u200b"
-    return (
-        s.replace("/", f"/{zwsp}")
-         .replace("-", f"-{zwsp}")
-         .replace("–", f"–{zwsp}")
-         .replace("|", f"|{zwsp}")
-    )
+    raw = _safe_str(text, max_length=50000)
+    lines = [ln.strip() for ln in raw.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    items: List[str] = []
+    bullet_re = re.compile(r"^(?:[•\-\*]|(\d+[\.\)])|[–])\s+")
+
+    def start_new(line: str) -> bool:
+        return bool(bullet_re.match(line))
+
+    def strip_marker(line: str) -> str:
+        return bullet_re.sub("", line).strip()
+
+    for ln in lines:
+        if start_new(ln) or not items:
+            items.append(strip_marker(ln) if start_new(ln) else ln)
+        else:
+            # continuation
+            items[-1] = (items[-1] + "<br/>" + ln).strip()
+
+        if len(items) >= max_items:
+            break
+
+    return [it for it in items if it.strip()]
 
 
-# --------------------------
+# ============================================================
 # PAGE 2 CARD (PLATYPUS, NO OVERLAP)
-# --------------------------
-def _make_card_styles():
+# ============================================================
+def _make_card_styles() -> Tuple[ParagraphStyle, ParagraphStyle, ParagraphStyle]:
     section_style = ParagraphStyle(
         name="SectionTitle",
         fontName=BOLD_FONT,
@@ -260,12 +320,15 @@ def _make_card_styles():
     return section_style, bullet_style, subtitle_style
 
 
-def _bullets_flow(items: List[str], bullet_style: ParagraphStyle, max_items: int = 10) -> ListFlowable:
-    items = _safe_list(items, max_items=max_items)
-    flow = []
-    for it in items:
-        it = _soft_breaks(it)
-        p = Paragraph(it, bullet_style)
+def _bullets_flow(items: Any, bullet_style: ParagraphStyle, max_items: int = 10) -> ListFlowable:
+    items_list = _safe_list(items, max_items=max_items)
+    flow: List[ListItem] = []
+    for it in items_list:
+        # SAFE Paragraph text: escape + soft breaks + preserve <br/> from coerce
+        safe = _xml_escape(it)
+        safe = safe.replace("&lt;br/&gt;", "<br/>")  # allow our internal br only
+        safe = _soft_breaks(safe)
+        p = Paragraph(safe, bullet_style)
         flow.append(ListItem(p, leftIndent=10, bulletText="•"))
     return ListFlowable(flow, leftIndent=10)
 
@@ -275,32 +338,54 @@ def _draw_plan_card_platypus(
     x: float, y_top: float,
     w: float, h: float,
     title: str, subtitle: str,
-    blocks: List[Tuple[str, List[str]]],
-):
+    blocks: List[Tuple[str, Any]],
+) -> None:
+    """
+    Robust plan card:
+    - Canvas draws the card chrome
+    - Platypus Frame lays out subtitle + sections + bullet lists
+    => nothing overlaps, ever.
+    """
     # Card chrome
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(colors.white)
     c.roundRect(x, y_top - h, w, h, 10, stroke=1, fill=1)
 
-    header_h = 18 * mm
+    # Taller header to accommodate wrapped titles (like EUROLIFE...)
+    header_h = 22 * mm
     c.setFillColor(BRAND["bg"])
     c.roundRect(x, y_top - header_h, w, header_h, 10, stroke=0, fill=1)
 
     c.setFillColor(BRAND["blue"])
     c.roundRect(x, y_top - 4, w, 4, 2, stroke=0, fill=1)
 
-    # Title
+    # Title (wrap by real width)
     c.setFillColor(BRAND["dark"])
     c.setFont(BOLD_FONT, 10.0)
-    c.drawString(x + 6 * mm, y_top - 8.2 * mm, _safe_str(title, 120))
+
+    safe_title = _safe_str(title, 160)
+    # Add soft breaks for separators so “EUROLIFE ... (EUROLIFE” can wrap nicely
+    # (only affects wrap logic for long tokens)
+    safe_title_wrappable = safe_title.replace("/", "/ ").replace("-", "- ").replace("–", "– ").replace("|", "| ")
+
+    title_lines = _wrap_by_width(safe_title_wrappable, BOLD_FONT, 10.0, w - 12 * mm)
+    # draw max 2 lines
+    title_y = y_top - 8.2 * mm
+    for line in title_lines[:2]:
+        c.drawString(x + 6 * mm, title_y, line.strip())
+        title_y -= 4.6 * mm
 
     # Story content (Platypus)
     section_style, bullet_style, subtitle_style = _make_card_styles()
-    story = [Paragraph(_soft_breaks(_safe_str(subtitle, 240)), subtitle_style)]
+
+    story: List[Any] = []
+    sub = _xml_escape(_safe_str(subtitle, 300))
+    sub = _soft_breaks(sub)
+    story.append(Paragraph(sub, subtitle_style))
 
     for sec_title, sec_items in blocks:
-        story.append(Paragraph(_safe_str(sec_title, 80), section_style))
-        story.append(_bullets_flow(sec_items, bullet_style, max_items=10))
+        story.append(Paragraph(_xml_escape(_safe_str(sec_title, 80)), section_style))
+        story.append(_bullets_flow(sec_items, bullet_style, max_items=14))
 
     # Frame area (below header)
     frame_x = x + 6 * mm
@@ -309,16 +394,14 @@ def _draw_plan_card_platypus(
     frame_h = h - header_h - 10 * mm
 
     frame = Frame(frame_x, frame_y, frame_w, frame_h, showBoundary=0)
-
-    # If content is too long, shrink slightly instead of overlapping
-    kif = KeepInFrame(frame_w, frame_h, story, mode="shrink")
+    kif = KeepInFrame(frame_w, frame_h, story, mode="shrink")  # shrink if too long
     frame.addFromList([kif], c)
 
 
-# --------------------------
+# ============================================================
 # DRAWING UTILITIES
-# --------------------------
-def _draw_header(c: canvas.Canvas, W: float, H: float, right_title: str):
+# ============================================================
+def _draw_header(c: canvas.Canvas, W: float, H: float, right_title: str) -> None:
     c.setFillColor(BRAND["dark"])
     c.rect(0, H - 20 * mm, W, 20 * mm, stroke=0, fill=1)
 
@@ -338,13 +421,10 @@ def _draw_header(c: canvas.Canvas, W: float, H: float, right_title: str):
     c.drawRightString(W - 14 * mm, H - 12.5 * mm, _safe_str(right_title, 120))
 
 
-def _draw_footer(c: canvas.Canvas, W: float):
+def _draw_footer(c: canvas.Canvas, W: float) -> None:
     c.setFillColor(colors.HexColor("#9CA3AF"))
     c.setFont(BASE_FONT, 8.5)
-    c.drawString(
-        14 * mm, 12 * mm,
-        "PETSHEALTH | www.petshealth.gr | info@petshealth.gr | +30 211 700 533"
-    )
+    c.drawString(14 * mm, 12 * mm, "PETSHEALTH | www.petshealth.gr | info@petshealth.gr | +30 211 700 533")
     c.setFont(BASE_FONT, 7.5)
     c.drawRightString(W - 14 * mm, 12 * mm, "Because we care for your pets as much as you do")
 
@@ -355,7 +435,7 @@ def _draw_polaroid(
     x: float, y: float,
     w: float, h: float,
     angle: float = 0,
-):
+) -> None:
     if not img_bytes:
         return
     pad = 3 * mm
@@ -394,7 +474,7 @@ def _draw_polaroid(
     c.restoreState()
 
 
-def _polaroids_for_page(data: Dict, page_index: int) -> List[bytes]:
+def _polaroids_for_page(data: Dict[str, Any], page_index: int) -> List[bytes]:
     imgs = data.get("polaroid_images", []) or []
     if not imgs:
         return []
@@ -406,7 +486,7 @@ def _polaroids_for_page(data: Dict, page_index: int) -> List[bytes]:
     return out
 
 
-def _draw_page_polaroids(c: canvas.Canvas, W: float, H: float, data: Dict, page_index: int):
+def _draw_page_polaroids(c: canvas.Canvas, W: float, H: float, data: Dict[str, Any], page_index: int) -> None:
     pimgs = _polaroids_for_page(data, page_index)
     if not pimgs:
         return
@@ -418,23 +498,53 @@ def _draw_page_polaroids(c: canvas.Canvas, W: float, H: float, data: Dict, page_
         _draw_polaroid(c, pimgs[1], W - 14 * mm - w, y, w, h, angle=6)
 
 
-# --------------------------
-# PLATYPUS LIST (PAGE 3)
-# --------------------------
-def _create_platypus_bullets(items: List[str], style: ParagraphStyle, max_items: int = 10) -> ListFlowable:
-    items = _safe_list(items, max_items=max_items)
-    flow = []
-    for item in items:
-        p = Paragraph(_soft_breaks(item), style)
-        flow.append(ListItem(p, leftIndent=10, bulletText="•", value="•"))
+# ============================================================
+# PAGE 3 BULLETS (robust, never blank)
+# ============================================================
+def _create_platypus_bullets(items: Any, style: ParagraphStyle, max_items: int = 12) -> ListFlowable:
+    items_list = _safe_list(items, max_items=max_items)
+    flow: List[ListItem] = []
+    for it in items_list:
+        safe = _xml_escape(it)
+        safe = safe.replace("&lt;br/&gt;", "<br/>")  # allow our internal br only
+        safe = _soft_breaks(safe)
+        p = Paragraph(safe, style)
+        flow.append(ListItem(p, leftIndent=10, bulletText="•"))
+    if not flow:
+        # ensure something renders (prevents "blank box")
+        p = Paragraph(_xml_escape("—"), style)
+        flow.append(ListItem(p, leftIndent=10, bulletText="•"))
     return ListFlowable(flow, bulletType="bullet", leftIndent=10)
 
 
-# --------------------------
+def _keep_in_frame(frame: Frame, story: List[Any], w: float, h: float, c: canvas.Canvas, shrink: bool = True) -> None:
+    """
+    Always renders something, and shrinks if needed instead of clipping/blanking.
+    """
+    try:
+        if shrink:
+            frame.addFromList([KeepInFrame(w, h, story, mode="shrink")], c)
+        else:
+            frame.addFromList(story, c)
+    except Exception as e:
+        logger.warning(f"KeepInFrame fallback used due to: {e}")
+        # fallback: render a short safe paragraph
+        fallback = Paragraph(_xml_escape("Content could not be rendered."), ParagraphStyle(
+            name="Fallback",
+            fontName=BASE_FONT,
+            fontSize=9,
+            leading=12,
+            textColor=BRAND["dark"],
+            alignment=TA_LEFT,
+        ))
+        frame.addFromList([fallback], c)
+
+
+# ============================================================
 # MAIN BUILDER
-# --------------------------
-def build_quote_pdf(data: Dict) -> bytes:
-    logger.info("Starting PDF generation (v5 - complete)...")
+# ============================================================
+def build_quote_pdf(data: Dict[str, Any]) -> bytes:
+    logger.info("Starting PDF generation (v5 FINAL)...")
     data = _validate_data_dict(data)
 
     buf = io.BytesIO()
@@ -443,7 +553,10 @@ def build_quote_pdf(data: Dict) -> bytes:
 
     selected_plans = data.get("selected_plans", [])
     mode = data.get("quote_mode", "")
-    pet_count = int(data.get("pet_count", 1))
+    try:
+        pet_count = int(data.get("pet_count", 1) or 1)
+    except Exception:
+        pet_count = 1
 
     plan_1_name = data.get("plan_1_name", "")
     plan_1_provider = data.get("plan_1_provider", "")
@@ -451,14 +564,11 @@ def build_quote_pdf(data: Dict) -> bytes:
     plan_2_provider = data.get("plan_2_provider", "")
 
     # ============================================
-    # PAGE 1: QUOTE SUMMARY (COMPLETE)
+    # PAGE 1: QUOTE SUMMARY
     # ============================================
-
-    # Header
     c.setFillColor(BRAND["dark"])
     c.rect(0, H - 28 * mm, W, 28 * mm, stroke=0, fill=1)
 
-    # Logo
     if LOGO_PATH.exists():
         try:
             logo = ImageReader(str(LOGO_PATH))
@@ -476,16 +586,14 @@ def build_quote_pdf(data: Dict) -> bytes:
         c.setFont(BOLD_FONT, 15)
         c.drawString(14 * mm, H - 16 * mm, "PETSHEALTH – Pet Insurance Quotation")
 
-    # Quote date
     c.setFont(BASE_FONT, 9.5)
     c.setFillColor(colors.HexColor("#E5E7EB"))
     quote_date = data.get("quote_date", "")
     c.drawRightString(W - 14 * mm, H - 22 * mm, f"Quote Date: {quote_date}")
 
-    # Marketing hook
     c.setFillColor(BRAND["blue"])
     c.setFont(BOLD_FONT, 11.5)
-    hook = data.get("marketing_hook", "")
+    hook = _safe_str(data.get("marketing_hook", ""), 140)
     c.drawString(14 * mm, H - 36 * mm, hook)
 
     # Client summary box
@@ -503,7 +611,6 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFont(BOLD_FONT, 11.2)
     c.drawString(box_x + 8 * mm, y - 10 * mm, "Client & Pet Summary")
 
-    # Client details
     c.setFont(BASE_FONT, 10)
     c.setFillColor(BRAND["dark"])
     client_name = data.get("client_name", "")
@@ -518,22 +625,19 @@ def build_quote_pdf(data: Dict) -> bytes:
     if location:
         c.drawString(box_x + 8 * mm, y - 42 * mm, f"Location: {location}")
 
-    # Pet details
     c.setFillColor(BRAND["muted"])
     c.setFont(BASE_FONT, 9.5)
 
     if "Bulk" in mode:
-        c.drawRightString(
-            box_x + box_w - 8 * mm, y - 18 * mm,
-            f"Pets: {pet_count} (Bulk quote)"
-        )
+        c.drawRightString(box_x + box_w - 8 * mm, y - 18 * mm, f"Pets: {pet_count} (Bulk quote)")
         bulk_summary = data.get("bulk_summary", "")
         if bulk_summary:
             c.setFont(BASE_FONT, 9)
             yyb = y - 42 * mm
             for line in bulk_summary.splitlines()[:4]:
+                line = line.strip()
                 if line:
-                    c.drawString(box_x + 8 * mm, yyb, line[:120])
+                    c.drawString(box_x + 8 * mm, yyb, _safe_str(line, 140))
                     yyb -= 11
     else:
         pet_name = data.get("pet_name", "")
@@ -542,15 +646,9 @@ def build_quote_pdf(data: Dict) -> bytes:
         pet_dob = data.get("pet_dob", "")
         pet_microchip = data.get("pet_microchip", "")
 
-        c.drawRightString(
-            box_x + box_w - 8 * mm, y - 18 * mm,
-            f"Pet: {pet_name} ({pet_species})"
-        )
+        c.drawRightString(box_x + box_w - 8 * mm, y - 18 * mm, f"Pet: {pet_name} ({pet_species})")
         c.drawRightString(box_x + box_w - 8 * mm, y - 26 * mm, f"Breed: {pet_breed}")
-        c.drawRightString(
-            box_x + box_w - 8 * mm, y - 34 * mm,
-            f"DOB: {pet_dob} | Microchip: {pet_microchip}"
-        )
+        c.drawRightString(box_x + box_w - 8 * mm, y - 34 * mm, f"DOB: {pet_dob} | Microchip: {pet_microchip}")
 
     # Recommended options
     y2 = y - box_h - 10 * mm
@@ -560,11 +658,9 @@ def build_quote_pdf(data: Dict) -> bytes:
     y2 -= 8 * mm
 
     c.setFont(BASE_FONT, 10)
-
     if "PET CARE PLUS (INTERLIFE)" in selected_plans:
         c.drawString(14 * mm, y2, f"• {plan_1_name} – {plan_1_provider}")
         y2 -= 6 * mm
-
     if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
         c.drawString(14 * mm, y2, f"• {plan_2_name} – {plan_2_provider}")
         y2 -= 6 * mm
@@ -583,12 +679,8 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFont(BOLD_FONT, 11)
     c.drawString(card_x + 8 * mm, y3 - 10 * mm, "Pricing Summary")
     c.setFont(BASE_FONT, 10)
-    c.drawRightString(
-        card_x + card_w - 8 * mm, y3 - 10 * mm,
-        "Annual Premium (€)"
-    )
+    c.drawRightString(card_x + card_w - 8 * mm, y3 - 10 * mm, "Annual Premium (€)")
 
-    # Plan prices
     yy = y3 - 24 * mm
     line_gap = 11 * mm
 
@@ -598,32 +690,30 @@ def build_quote_pdf(data: Dict) -> bytes:
     if "PET CARE PLUS (INTERLIFE)" in selected_plans:
         c.setFillColor(BRAND["muted"])
         c.setFont(BASE_FONT, 10)
-        c.drawString(card_x + 8 * mm, yy, plan_1_name)
+        c.drawString(card_x + 8 * mm, yy, _safe_str(plan_1_name, 40))
         c.setFillColor(BRAND["dark"])
         c.setFont(BOLD_FONT, 10.5)
-        c.drawRightString(card_x + card_w - 8 * mm, yy, plan_1_price_total)
+        c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_1_price_total, 20))
         yy -= line_gap
 
     if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
         c.setFillColor(BRAND["muted"])
         c.setFont(BASE_FONT, 10)
-        c.drawString(card_x + 8 * mm, yy, plan_2_name)
+        c.drawString(card_x + 8 * mm, yy, _safe_str(plan_2_name, 40))
         c.setFillColor(BRAND["dark"])
         c.setFont(BOLD_FONT, 10.5)
-        c.drawRightString(card_x + card_w - 8 * mm, yy, plan_2_price_total)
+        c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_2_price_total, 20))
 
-    # Total bar
     total_bar_h = 13 * mm
     c.setFillColor(BRAND["blue"])
     c.roundRect(card_x, y3 - card_h, card_w, total_bar_h, 10, stroke=0, fill=1)
     c.setFillColor(colors.white)
     c.setFont(BOLD_FONT, 12.5)
     c.drawString(card_x + 8 * mm, y3 - card_h + 4.5 * mm, "Total Annual Premium")
-
     total_price = data.get("total_price", "")
-    c.drawRightString(card_x + card_w - 8 * mm, y3 - card_h + 4.5 * mm, total_price)
+    c.drawRightString(card_x + card_w - 8 * mm, y3 - card_h + 4.5 * mm, _safe_str(total_price, 24))
 
-    # Notes
+    # Notes / Disclaimer (wrapped, stops before footer)
     y4 = y3 - card_h - 8 * mm
     c.setFillColor(BRAND["dark"])
     c.setFont(BOLD_FONT, 10.5)
@@ -634,8 +724,9 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFont(BASE_FONT, 9)
     notes = data.get("notes", "")
     notes_width = W - 28 * mm
-    notes_lines = _wrap_by_width(notes, BASE_FONT, 9, notes_width)
-    for line in notes_lines:
+    for line in _wrap_by_width(notes, BASE_FONT, 9, notes_width):
+        if y4 < 26 * mm:
+            break
         c.drawString(14 * mm, y4, line)
         y4 -= 11
 
@@ -671,7 +762,7 @@ def build_quote_pdf(data: Dict) -> bytes:
             ]
         else:
             title = f"{plan_2_name} ({plan_2_provider})"
-            subtitle = f"Limit: {data.get('plan2_limit','')} | Area: {data.get('plan2_area','')} | Network only"
+            subtitle = f"Unlimited (in-network) | Area: {data.get('plan2_area','')}"
             blocks = [
                 ("Key Facts", data.get("plan2_key_facts", [])),
                 ("Covers (Summary)", data.get("plan2_covers", [])),
@@ -682,7 +773,6 @@ def build_quote_pdf(data: Dict) -> bytes:
         _draw_plan_card_platypus(c, x, y_top, w, h, title, subtitle, blocks)
 
     else:
-        # Two plans side by side
         gap = 8 * mm
         card_w = (W - 28 * mm - gap) / 2
         card_h = 170 * mm
@@ -702,6 +792,7 @@ def build_quote_pdf(data: Dict) -> bytes:
             _draw_plan_card_platypus(c, x1, y_top, card_w, card_h, title, subtitle, blocks)
 
         if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
+            # IMPORTANT: long provider names will WRAP now
             title = f"{plan_2_name} ({plan_2_provider})"
             subtitle = f"Unlimited (in-network) | Area: {data.get('plan2_area','')}"
             blocks = [
@@ -716,7 +807,7 @@ def build_quote_pdf(data: Dict) -> bytes:
     _draw_footer(c, W)
 
     # ============================================
-    # PAGE 3: ABOUT & HIGHLIGHTS (BIO FIX)
+    # PAGE 3: ABOUT & OFFICIAL HIGHLIGHTS
     # ============================================
     c.showPage()
     _draw_header(c, W, H, "About & Official Highlights")
@@ -747,14 +838,10 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.roundRect(margin_x, top_y - 12 * mm, W - 2 * margin_x, 12 * mm, 8, stroke=1, fill=1)
     c.setFillColor(BRAND["dark"])
     c.setFont(BOLD_FONT, 10.2)
-    c.drawString(
-        margin_x + 6 * mm, top_y - 8.3 * mm,
-        "Trust: SAFE PET (2016)  •  Pet Insurance advisor  •  CII certified (PL4, W01)"
-    )
-
+    c.drawString(margin_x + 6 * mm, top_y - 8.3 * mm, "Trust: SAFE PET (2016)  •  Pet Insurance advisor  •  CII certified (PL4, W01)")
     top_y -= 16 * mm
 
-    # About advisor box
+    # About advisor box (no truncation from builder side)
     box1_h = 92 * mm
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(BRAND["bg"])
@@ -770,16 +857,16 @@ def build_quote_pdf(data: Dict) -> bytes:
     if not bio:
         bio = "Professional pet insurance advisor. Contact us for more information."
 
-    bio_par = Paragraph(_soft_breaks(bio).replace("\n", "<br/>"), body_style)
-    bio_frame = Frame(
-        margin_x + 6 * mm,
-        top_y - box1_h + 8 * mm,
-        W - 2 * margin_x - 12 * mm,
-        box1_h - 24 * mm,
-        showBoundary=0,
-    )
-    # Natural wrapping without aggressive shrink
-    bio_frame.addFromList([bio_par], c)
+    bio_safe = _xml_escape(bio).replace("\n", "<br/>")
+    bio_safe = _soft_breaks(bio_safe)
+    bio_par = Paragraph(bio_safe, body_style)
+
+    bio_frame_x = margin_x + 6 * mm
+    bio_frame_y = top_y - box1_h + 8 * mm
+    bio_frame_w = W - 2 * margin_x - 12 * mm
+    bio_frame_h = box1_h - 24 * mm
+    bio_frame = Frame(bio_frame_x, bio_frame_y, bio_frame_w, bio_frame_h, showBoundary=0)
+    _keep_in_frame(bio_frame, [bio_par], bio_frame_w, bio_frame_h, c, shrink=False)
 
     # Credentials box
     box2_top = top_y - box1_h - 8 * mm
@@ -792,18 +879,19 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(margin_x + 6 * mm, box2_top - 10 * mm, "Credentials (CII)")
 
-    cii = data.get("cii_titles", []) or ["CII Certified Pet Insurance Professional"]
+    cii = data.get("cii_titles", [])
+    if not cii:
+        cii = ["CII Certified Pet Insurance Professional"]
     cii_flow = _create_platypus_bullets(cii, small_style, max_items=6)
-    cii_frame = Frame(
-        margin_x + 6 * mm,
-        box2_top - box2_h + 6 * mm,
-        W - 2 * margin_x - 12 * mm,
-        box2_h - 18 * mm,
-        showBoundary=0,
-    )
-    cii_frame.addFromList([cii_flow], c)
 
-    # Official highlights
+    cii_frame_x = margin_x + 6 * mm
+    cii_frame_y = box2_top - box2_h + 6 * mm
+    cii_frame_w = W - 2 * margin_x - 12 * mm
+    cii_frame_h = box2_h - 18 * mm
+    cii_frame = Frame(cii_frame_x, cii_frame_y, cii_frame_w, cii_frame_h, showBoundary=0)
+    _keep_in_frame(cii_frame, [cii_flow], cii_frame_w, cii_frame_h, c, shrink=True)
+
+    # Official highlights (two columns)
     box3_top = box2_top - box2_h - 10 * mm
     box3_h = 70 * mm
 
@@ -825,10 +913,19 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(margin_x + 6 * mm, box3_top - 8 * mm, "EUROLIFE – My Happy Pet")
 
-    eu = data.get("official_eurolife", []) or ["Professional coverage with network benefits"]
-    eu_flow = _create_platypus_bullets(eu, small_style, max_items=8)
-    eu_frame = Frame(margin_x + 6 * mm, box3_top - box3_h + 6 * mm, col_w - 12 * mm, box3_h - 20 * mm, showBoundary=0)
-    eu_frame.addFromList([eu_flow], c)
+    eu = data.get("official_eurolife", [])
+    if not eu:
+        eu = [
+            "Προγραμμάτισε την επίσκεψη σου στα γραφεία μας μέσω της εφαρμογής Book Your Visit",
+            "Προστάτεψε αποτελεσματικά τον πιο χνουδωτό σου φίλο από 75€/ χρόνο",
+        ]
+    eu_flow = _create_platypus_bullets(eu, small_style, max_items=18)
+    eu_frame_x = margin_x + 6 * mm
+    eu_frame_y = box3_top - box3_h + 6 * mm
+    eu_frame_w = col_w - 12 * mm
+    eu_frame_h = box3_h - 20 * mm
+    eu_frame = Frame(eu_frame_x, eu_frame_y, eu_frame_w, eu_frame_h, showBoundary=0)
+    _keep_in_frame(eu_frame, [eu_flow], eu_frame_w, eu_frame_h, c, shrink=True)
 
     # INTERLIFE column
     xr = margin_x + col_w + gap
@@ -841,16 +938,25 @@ def build_quote_pdf(data: Dict) -> bytes:
     c.setFillColor(BRAND["dark"])
     c.drawString(xr + 6 * mm, box3_top - 8 * mm, "INTERLIFE – PET CARE")
 
-    it = data.get("official_interlife", []) or ["Comprehensive coverage with flexibility"]
-    it_flow = _create_platypus_bullets(it, small_style, max_items=8)
-    it_frame = Frame(xr + 6 * mm, box3_top - box3_h + 6 * mm, col_w - 12 * mm, box3_h - 20 * mm, showBoundary=0)
-    it_frame.addFromList([it_flow], c)
+    it = data.get("official_interlife", [])
+    if not it:
+        it = [
+            "Όταν αγαπώ… προσφέρω, φροντίζω, προνοώ!",
+            "Ουσιαστική κάλυψη έναντι ατυχημάτων ή/και ασθενειών σε σκύλους, ανεξαρτήτως ράτσας.",
+            "Νοσηλεία • Εξετάσεις • Αμοιβές Ιατρών • Θεραπείες & Χειρουργικές Επεμβάσεις",
+        ]
+    it_flow = _create_platypus_bullets(it, small_style, max_items=18)
+    it_frame_x = xr + 6 * mm
+    it_frame_y = box3_top - box3_h + 6 * mm
+    it_frame_w = col_w - 12 * mm
+    it_frame_h = box3_h - 20 * mm
+    it_frame = Frame(it_frame_x, it_frame_y, it_frame_w, it_frame_h, showBoundary=0)
+    _keep_in_frame(it_frame, [it_flow], it_frame_w, it_frame_h, c, shrink=True)
 
     _draw_page_polaroids(c, W, H, data, page_index=3)
     _draw_footer(c, W)
 
     c.save()
     pdf_bytes = buf.getvalue()
-
     logger.info(f"✅ PDF generated successfully: {len(pdf_bytes)} bytes")
     return pdf_bytes
