@@ -5,7 +5,7 @@ Safe PDF merging and validation
 import io
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, List, Dict
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
@@ -71,7 +71,7 @@ def validate_pdf_bytes(pdf_bytes: bytes, max_size_mb: int = 50) -> bool:
         raise PDFError(f"Failed to validate PDF: {str(e)}") from e
 
 
-def validate_pdf_file(filepath: str | Path) -> bool:
+def validate_pdf_file(filepath: Union[str, Path]) -> bool:
     """
     Validate PDF file from disk.
 
@@ -112,7 +112,7 @@ def validate_pdf_file(filepath: str | Path) -> bool:
 
 def merge_quote_with_ipids(
         quote_pdf_bytes: bytes,
-        selected_plans: list[str],
+        selected_plans: List[str],
         validate_ipids: bool = True,
 ) -> bytes:
     """
@@ -210,7 +210,7 @@ def merge_quote_with_ipids(
         raise PDFError(f"Failed to merge PDFs: {str(e)}") from e
 
 
-def get_ipid_status(selected_plans: list[str]) -> dict:
+def get_ipid_status(selected_plans: List[str]) -> Dict:
     """
     Check which IPID files are available.
 
@@ -266,7 +266,7 @@ def get_ipid_status(selected_plans: list[str]) -> dict:
 # PDF Metadata
 # --------------------------
 
-def add_pdf_metadata(pdf_bytes: bytes, metadata: dict) -> bytes:
+def add_pdf_metadata(pdf_bytes: bytes, metadata: Dict) -> bytes:
     """
     Add metadata to PDF (optional enhancement).
 
