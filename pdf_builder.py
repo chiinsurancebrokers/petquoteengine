@@ -1,6 +1,10 @@
 """
-PETSHEALTH Quote Engine - Secure PDF Builder
+PETSHEALTH Quote Engine - Secure PDF Builder (IMPROVED)
 Professional PDF generation with comprehensive security and validation
+IMPROVEMENTS:
+- Increased line spacing in plan cards (page 2)
+- Text wrapping for long subtitles
+- Better layout for dual-column cards
 """
 import io
 import logging
@@ -474,7 +478,7 @@ def _draw_plan_card(
         blocks: list[tuple[str, list[str]]]
 ):
     """
-    Draw a plan coverage card.
+    Draw a plan coverage card with improved spacing and text wrapping.
 
     Args:
         c: Canvas object
@@ -489,9 +493,10 @@ def _draw_plan_card(
     c.setFillColor(colors.white)
     c.roundRect(x, y_top - h, w, h, 10, stroke=1, fill=1)
 
-    # Header section
+    # Header section - increased height for wrapped subtitle
+    header_h = 16 * mm  # Increased from 14mm
     c.setFillColor(BRAND["bg"])
-    c.roundRect(x, y_top - 14 * mm, w, 14 * mm, 10, stroke=0, fill=1)
+    c.roundRect(x, y_top - header_h, w, header_h, 10, stroke=0, fill=1)
 
     # Top accent bar
     c.setFillColor(BRAND["blue"])
@@ -503,14 +508,22 @@ def _draw_plan_card(
     safe_title = _safe_str(title, max_length=80)
     c.drawString(x + 6 * mm, y_top - 8.2 * mm, safe_title)
 
-    # Subtitle
+    # Subtitle with text wrapping - IMPROVED
     c.setFillColor(BRAND["muted"])
-    c.setFont(BASE_FONT, 8.0)
-    safe_subtitle = _safe_str(subtitle, max_length=100)
-    c.drawString(x + 6 * mm, y_top - 12.3 * mm, safe_subtitle)
+    c.setFont(BASE_FONT, 7.5)  # Slightly smaller font
+    safe_subtitle = _safe_str(subtitle, max_length=150)
 
-    # Content sections
-    yy = y_top - 18 * mm
+    # Calculate max chars based on card width (more conservative)
+    card_w_chars = int((w - 12 * mm) * 0.30)  # More conservative wrapping
+    subtitle_lines = _wrap_words(safe_subtitle, card_w_chars)
+
+    subtitle_y = y_top - 11.5 * mm
+    for sub_line in subtitle_lines[:2]:  # Max 2 lines for subtitle
+        c.drawString(x + 6 * mm, subtitle_y, sub_line)
+        subtitle_y -= 8
+
+    # Content sections - INCREASED LINE SPACING
+    yy = y_top - 20 * mm  # Adjusted start position
 
     for section_title, bullet_items in blocks:
         bullet_items = _safe_list(bullet_items, max_items=6)
@@ -522,11 +535,11 @@ def _draw_plan_card(
         c.drawString(x + 6 * mm, yy, safe_section)
         yy -= 5
 
-        # Bullets
+        # Bullets with INCREASED line spacing (10.5 instead of 9.4)
         yy = _draw_bullet_block(
             c, x + 8 * mm, yy,
             bullet_items,
-            max_chars=52, leading=9.4, size=8.2
+            max_chars=52, leading=10.5, size=8.2
         )
         yy -= 5
 
@@ -657,7 +670,7 @@ def build_quote_pdf(data: dict) -> bytes:
 
         c.drawString(box_x + 8 * mm, y - 18 * mm, f"Client: {client_name}")
         c.drawString(box_x + 8 * mm, y - 26 * mm, f"Phone:  {client_phone}")
-        c.drawString(box_x + 8 * mm, y - 34 * mm, f"Email:  {client_email}")
+        c.drawString(box_x + 8 * mm, y - 34 * mm, f"Email:   {client_email}")
 
         location = _safe_str(data.get("location", ""), max_length=50)
         if location:
@@ -792,7 +805,7 @@ def build_quote_pdf(data: dict) -> bytes:
         _draw_footer(c, W)
 
         # ============================================
-        # PAGE 2: COVERAGE DETAILS
+        # PAGE 2: COVERAGE DETAILS - IMPROVED
         # ============================================
 
         c.showPage()
@@ -838,10 +851,10 @@ def build_quote_pdf(data: dict) -> bytes:
             _draw_plan_card(c, x, y_top, w, h, title, subtitle, blocks)
 
         else:
-            # Two plans side by side
+            # Two plans side by side - IMPROVED LAYOUT
             gap = 8 * mm
             card_w = (W - 28 * mm - gap) / 2
-            card_h = 165 * mm
+            card_h = 170 * mm  # Slightly increased height for better spacing
             x1 = 14 * mm
             x2 = 14 * mm + card_w + gap
             y_top = top
@@ -864,7 +877,8 @@ def build_quote_pdf(data: dict) -> bytes:
                 title = f"{plan_2_name} ({plan_2_provider})"
                 plan2_limit = _safe_str(data.get("plan2_limit", ""), max_length=40)
                 plan2_area = _safe_str(data.get("plan2_area", ""), max_length=40)
-                subtitle = f"Limit: {plan2_limit} | Area: {plan2_area} | Network only"
+                # Shorter subtitle to prevent overflow
+                subtitle = f"Unlimited coverage (in-network) | {plan2_area}"
                 blocks = [
                     ("Key Facts", data.get("plan2_key_facts", [])),
                     ("Covers (Summary)", data.get("plan2_covers", [])),

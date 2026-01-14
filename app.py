@@ -1,6 +1,7 @@
 """
 PETSHEALTH Quote Engine - Secure Main Application
 Professional pet insurance quote generation with comprehensive security
+UPDATED: New email system with professional HTML templates
 """
 import logging
 from datetime import date
@@ -19,7 +20,7 @@ from input_validators import (
     validate_client_data, sanitize_text_input, sanitize_text_area,
     ValidationError, validate_image_file,
 )
-from email_utils import send_quote_email, get_rate_limit_status, EmailError, RateLimitError
+from petshealth_email_standalone import send_petshealth_quote
 from web_utils import fetch_highlights, fetch_site_images, download_image_bytes, WebScrapingError
 from pdf_utils import merge_quote_with_ipids, get_ipid_status, PDFError
 from pdf_builder import build_quote_pdf
@@ -99,7 +100,7 @@ st.markdown(
         Επαγγελματική δημιουργία προσφορών • Σύγκριση προγραμμάτων • IPID pages • Αυτόματη αποστολή email
       </div>
       <div style="margin-top:12px;padding:10px 16px;background:rgba(255,255,255,0.15);border-radius:8px;font-size:13px;">
-        <strong>🛡️ Secure Quote Engine</strong> – Enterprise-grade security with input validation and rate limiting
+        <strong>🛡️ Secure Quote Engine</strong> – Enterprise-grade security with input validation and professional HTML emails
       </div>
     </div>
     """,
@@ -124,15 +125,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Rate limit status
-    st.caption("📧 **Email Rate Limit**")
-    rate_status = get_rate_limit_status()
-    st.metric(
-        "Remaining sends",
-        f"{rate_status['remaining']}/{rate_status['max_per_hour']}",
-        help="Emails per hour limit"
-    )
-
     # IPID status
     if selected_plans:
         st.caption("📋 **IPID Status**")
@@ -148,6 +140,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"🔒 **Security**: Auto CC to {ADVISOR_EMAIL}")
+    st.caption("📧 **Email**: Professional HTML templates")
 
 
 # --------------------------
@@ -771,9 +764,8 @@ st.subheader("📧 Send Quote via Email")
 st.markdown("""
 <div class="security-indicator security-ok" style="margin-bottom:16px;">
 <strong>📬 Secure Email Delivery</strong><br>
-• Professional sales email template<br>
+• Professional HTML email template (Greek/English)<br>
 • Automatically CC'd to <strong>""" + ADVISOR_EMAIL + """</strong><br>
-• Rate limited to prevent abuse<br>
 • TLS encrypted transmission
 </div>
 """, unsafe_allow_html=True)
@@ -798,97 +790,51 @@ else:
         else:
             st.error("❌ Invalid email address format")
 
-    # Email customization
-    from email_utils import plan_names_for_email
-
-
-    def plan_names_for_email(plans):
-        if not plans:
-            return "—"
-        if len(plans) == 1:
-            return "PET CARE PLUS" if "INTERLIFE" in plans[0] else "EUROLIFE My Happy Pet"
-        return "PET CARE PLUS + EUROLIFE My Happy Pet"
-
-
-    default_subject = f"🐾 PETSHEALTH – Η Προσωπική σας Προσφορά Ασφάλισης ({client_name or 'Client'})"
-    subject = st.text_input(
-        "📋 Email subject",
-        value=default_subject,
-        max_chars=200
+    # Language selection
+    email_language = st.radio(
+        "Email language:",
+        ["🇬🇷 Greek", "🇬🇧 English"],
+        horizontal=True,
+        index=0
     )
 
+    lang_code = "el" if "Greek" in email_language else "en"
 
-    # Generate professional email body
-    def generate_email_body():
-        client_display = client_name.strip() or "Αγαπητέ/ή"
+    # Custom subject (optional)
+    with st.expander("✏️ Customize email subject (optional)"):
+        custom_subject = st.text_input(
+            "Custom subject line",
+            value="",
+            placeholder="Leave empty for auto-generated subject",
+            max_chars=200
+        )
 
-        if "Bulk" in quote_mode:
-            pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία των {pet_count} κατοικιδίων σας."
-            coverage_line = f"📋 **Συνολικό ετήσιο κόστος:** {total:.2f} €"
+    # Show preview
+    with st.expander("👀 Preview email content"):
+        if lang_code == "el":
+            st.markdown(f"""
+**Subject:** Προσφορά Ασφάλισης Κατοικιδίου - {client_name or 'Client'}
+
+**Email Body Preview:**
+- Professional HTML design with PETSHEALTH branding
+- Quote summary box showing: **{total:.2f} €**
+- Coverage highlights
+- Contact information
+- Tagline: "Επειδή νοιαζόμαστε για τα κατοικίδιά σας όσο κι εσείς."
+            """)
         else:
-            pet_display = pet_name.strip() or "το αγαπημένο σας κατοικίδιο"
-            pet_intro = f"Χαίρομαι που εμπιστεύεστε την PETSHEALTH για την προστασία του {pet_display}."
-            coverage_line = f"📋 **Ετήσιο κόστος για τον/την {pet_display}:** {total:.2f} €"
+            st.markdown(f"""
+**Subject:** Pet Insurance Quote - {client_name or 'Client'}
 
-        plans_display = plan_names_for_email(selected_plans)
+**Email Body Preview:**
+- Professional HTML design with PETSHEALTH branding
+- Quote summary box showing: **€{total:.2f}**
+- Coverage highlights
+- Contact information
+- Tagline: "Because we care for your pets as much as you do."
+            """)
 
-        return f"""Καλησπέρα {client_display},
-
-{pet_intro}
-
-Επισυνάπτω την προσωπική σας προσφορά με όλες τις λεπτομέρειες κάλυψης.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 **Η ΠΡΟΤΑΣΗ ΣΑΣ**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📦 **Επιλεγμένα προγράμματα:** {plans_display}
-{coverage_line}
-
-✅ **Κύρια οφέλη:**
-   • Προστασία από απρόβλεπτα περιστατικά & ασθένειες
-   • Κάλυψη νοσοκομειακών δαπανών & διαγνωστικών
-   • Ηρεμία & οικονομική ασφάλεια
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📎 **ΣΤΟ ΕΠΙΣΥΝΑΠΤΟΜΕΝΟ PDF:**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-• Αναλυτική κάλυψη κάθε προγράμματος
-• Τι καλύπτεται & τι όχι (με πλήρη διαφάνεια)
-• Περίοδοι αναμονής & όροι ασφάλισης
-• Επίσημα έγγραφα IPID
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 **ΕΠΟΜΕΝΑ ΒΗΜΑΤΑ:**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1️⃣ **Επιβεβαιώστε τα στοιχεία microchip**
-2️⃣ **Επιλέξτε το πρόγραμμα που σας ταιριάζει**
-3️⃣ **Ολοκληρώστε την αίτηση online ή με τη βοήθειά μας**
-
-Είμαι στη διάθεσή σας για οποιαδήποτε ερώτηση.
-
-**Με εκτίμηση,**
-
-**Chris Iatropoulos**  
-*Pet Insurance Advisor | CII Certified (PL4, W01)*
-
-📧 info@petshealth.gr  
-📱 +30 211 700 533  
-🌐 www.petshealth.gr
-
-*"Because we care for your pets as much as you do"* 🐾
-"""
-
-
-    body = st.text_area(
-        "📝 Email body (editable)",
-        value=generate_email_body(),
-        max_chars=5000,
-        height=350,
-        help="Professional sales-driven template"
-    )
+        st.info("📧 Email body is auto-generated. Professional HTML formatting included.")
 
     # Send button
     send_btn = st.button(
@@ -901,41 +847,54 @@ else:
     if send_btn:
         try:
             with st.spinner("📤 Sending professional quote email..."):
-                result = send_quote_email(
+                result = send_petshealth_quote(
                     to_email=recipient,
-                    subject=subject.strip(),
-                    body_text=body.strip(),
+                    client_name=client_name or "Valued Customer",
                     pdf_bytes=st.session_state.final_pdf_bytes,
-                    filename=st.session_state.final_filename,
+                    total_premium=f"€{total:.2f}",
+                    subject=custom_subject.strip() if custom_subject.strip() else None,
                     cc_email=ADVISOR_EMAIL,
-                    check_rate_limit=True,
+                    language=lang_code,
+                    filename=st.session_state.final_filename,
+                    use_html=True
                 )
 
-            st.success(f"""
+            if result["success"]:
+                st.success(f"""
 ✅ **Email sent successfully!**
 
 📧 **To:** {result['to']}  
 📋 **CC:** {result['cc']}  
 📦 **Size:** {result['size_mb']}MB  
 ⏱️ **Time:** {result['elapsed_seconds']}s
+                """)
+                st.balloons()
+            else:
+                st.error("❌ Email sending failed")
 
-🔒 **Rate limit remaining:** {get_rate_limit_status()['remaining']} sends
-            """)
-            st.balloons()
-
-        except RateLimitError as e:
-            st.error(f"❌ **Rate limit exceeded**\n\n{str(e)}")
-        except EmailError as e:
-            st.error(f"❌ **Email send failed**\n\n{str(e)}\n\nPlease check your SMTP settings.")
-            logger.error(f"Email error: {e}", exc_info=True)
         except Exception as e:
-            st.error(f"❌ **Unexpected error:** {str(e)}")
-            logger.error(f"Unexpected email error: {e}", exc_info=True)
+            st.error(f"❌ **Error sending email:**\n\n{str(e)}")
+
+            # Show helpful error message
+            if "Authentication" in str(e) or "SMTP" in str(e):
+                st.info("""
+💡 **SMTP Authentication Issue?**
+
+For Gmail:
+1. Go to https://myaccount.google.com/apppasswords
+2. Generate App Password (16 characters)
+3. Set in Streamlit secrets (.streamlit/secrets.toml):
+   ```toml
+   SMTP_USER = "your@gmail.com"
+   SMTP_PASSWORD = "your_16char_app_password"
+   ```
+                """)
+
+            logger.error(f"Email error: {e}", exc_info=True)
 
 # --------------------------
 # FOOTER
 # --------------------------
 st.divider()
 st.caption("🛡️ **PETSHEALTH Quote Engine v1.0** | Secure • Professional • Compliant")
-st.caption(
-    f"Rate limits: {get_rate_limit_status()['remaining']}/{get_rate_limit_status()['max_per_hour']} emails remaining")
+st.caption("🚀 Powered by professional HTML email delivery")
