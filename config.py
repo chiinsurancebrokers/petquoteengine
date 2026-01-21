@@ -31,11 +31,17 @@ FONTS_DIR = ASSETS_DIR / "fonts"
 LOGO_PATH = ASSETS_DIR / "logo" / "petshealth_logo.png"
 
 # --------------------------
-# IPID Mappings
+# IPID Mappings - UPDATED WITH HOOLIE
 # --------------------------
 IPID_MAP = {
     "PET CARE PLUS (INTERLIFE)": str(IPID_DIR / "PETCARE_PLUS_IPID.pdf"),
     "EUROLIFE My Happy Pet (SAFE PET SYSTEM)": str(IPID_DIR / "EUROLIFE_MY_HAPPY_PET_IPID.pdf"),
+    "HOOLIE Pet Insurance - Silver (Dog)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
+    "HOOLIE Pet Insurance - Gold (Dog)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
+    "HOOLIE Pet Insurance - Platinum Dynasty (Dog)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
+    "HOOLIE Pet Insurance - Silver (Cat)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
+    "HOOLIE Pet Insurance - Gold (Cat)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
+    "HOOLIE Pet Insurance - Platinum Dynasty (Cat)": str(IPID_DIR / "HOOLIE_TERMS_CONDITIONS.pdf"),
 }
 PLAN_KEYS = list(IPID_MAP.keys())
 
@@ -46,6 +52,9 @@ PETSHEALTH_HOME_URL = "https://www.petshealth.gr/"
 PETSHEALTH_TEAM_URL = "https://www.petshealth.gr/petshealt-team"
 EUROLIFE_URL = "https://www.eurolife.gr/el-GR/proionta/idiotes/katoikidio/my-happy-pet"
 INTERLIFE_URL = "https://www.interlife-programs.gr/asfalisi/eidika-programmata/#petcare"
+HOOLIE_MAIN_URL = "https://pet-insurance.gr/"
+HOOLIE_DOG_URL = "https://pet-insurance.gr/hoolie-asfaleia-skulou/"
+HOOLIE_CAT_URL = "https://pet-insurance.gr/hoolie-asfaleia-gatas"
 
 # --------------------------
 # Email Settings
