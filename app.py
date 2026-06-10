@@ -641,8 +641,8 @@ with b:
         valid_images = []
         for uploaded_file in uploaded_files[:MAX_POLAROID_IMAGES]:
             try:
-                validate_image_file(uploaded_file)
                 img_bytes = uploaded_file.read()
+                validate_image_file(img_bytes, uploaded_file.name)
                 valid_images.append((uploaded_file.name, img_bytes))
             except ValidationError as ve:
                 st.error(f"❌ {uploaded_file.name}: {ve}")
@@ -796,49 +796,56 @@ with col_gen:
 
                             hoolie_plan_data = plans_pdf_config[plan_tier_pdf]
 
+                            hoolie_price = plan_prices.get(plan_key, 0.0)
                             plans_for_pdf.append({
                                 "name": plan_key,
                                 "provider": "HOOLIE",
-                                "price": plan_prices.get(plan_key, 0.0),
+                                "price": f"{hoolie_price:.2f}",
+                                "price_total": f"€{(hoolie_price * mult):.2f}",
                                 "limit": hoolie_plan_data['capital'],
                                 "area": "Ελλάδα",
                                 "key_facts": [f"✅ {k}" for k in list(hoolie_plan_data['coverage'].keys())[:5]],
                                 "covers": [f"{k}: {v}" for k, v in list(hoolie_plan_data['coverage'].items())[:8]],
                                 "exclusions": ["Προϋπάρχουσες παθήσεις", "Εκτροφή"],
-                                "waiting": ["Ασθένεια: 60 ημέρες", "Ατύχημα: 15 ημέρες"]
+                                "waiting": ["Ασθένεια: 60 ημέρες", "Ατύχημα: 15 ημέρες"],
+                                "highlight_title": "HOOLIE – Pet Insurance",
+                                "highlights": HOOLIE_INFO.get("features", []),
                             })
                         elif "PET CARE PLUS" in plan_key:
                             plans_for_pdf.append({
                                 "name": plan_1_name,
                                 "provider": plan_1_provider,
-                                "price": plan_1_price,
+                                "price": f"{plan_1_price:.2f}",
+                                "price_total": f"€{(plan_1_price * mult):.2f}",
                                 "limit": plan1_limit,
                                 "area": plan1_area,
                                 "key_facts": lines(plan1_key_facts_txt),
                                 "covers": lines(plan1_covers_txt),
                                 "exclusions": lines(plan1_exclusions_txt),
                                 "waiting": lines(plan1_waiting_txt),
+                                "highlight_title": "INTERLIFE – PET CARE",
+                                "highlights": st.session_state.official_interlife,
                             })
                         elif "EUROLIFE" in plan_key:
                             plans_for_pdf.append({
                                 "name": plan_2_name,
                                 "provider": plan_2_provider,
-                                "price": plan_2_price,
+                                "price": f"{plan_2_price:.2f}",
+                                "price_total": f"€{(plan_2_price * mult):.2f}",
                                 "limit": plan2_limit,
                                 "area": plan2_area,
                                 "key_facts": lines(plan2_key_facts_txt),
                                 "covers": lines(plan2_covers_txt),
                                 "exclusions": lines(plan2_exclusions_txt),
                                 "waiting": lines(plan2_waiting_txt),
+                                "highlight_title": "EUROLIFE – My Happy Pet",
+                                "highlights": st.session_state.official_eurolife,
                             })
 
-                    if any("HOOLIE" in pk for pk in selected_plans):
-                        st.warning(
-                            "⚠️ Note: the current PDF layout only renders dedicated coverage "
-                            "cards for PET CARE PLUS (INTERLIFE) and EUROLIFE My Happy Pet. "
-                            "Hoolie plan(s) are included in the price total but won't get their "
-                            "own coverage page yet."
-                        )
+                    # Apply custom highlights override (applies to all plans) if provided
+                    if final_highlights:
+                        for p in plans_for_pdf:
+                            p["highlights"] = final_highlights[:18]
 
                     # site_images may contain URL strings (from petshealth.gr scrape)
                     # or (filename, bytes) tuples (from manual upload). Normalize to bytes.
@@ -904,13 +911,8 @@ with col_gen:
                         "official_eurolife": st.session_state.official_eurolife,
                         "official_interlife": st.session_state.official_interlife,
                         "about_bio": final_bio,
+                        "plans": plans_for_pdf,
                     }
-
-                    if final_highlights:
-                        if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
-                            pdf_data["official_eurolife"] = final_highlights[:18]
-                        if "PET CARE PLUS (INTERLIFE)" in selected_plans:
-                            pdf_data["official_interlife"] = final_highlights[:18]
 
                     # Build quote PDF
                     quote_pdf_bytes = build_quote_pdf(pdf_data)
