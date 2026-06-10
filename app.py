@@ -840,6 +840,24 @@ with col_gen:
                             "own coverage page yet."
                         )
 
+                    # site_images may contain URL strings (from petshealth.gr scrape)
+                    # or (filename, bytes) tuples (from manual upload). Normalize to bytes.
+                    polaroid_bytes = []
+                    for item in st.session_state.site_images[:MAX_POLAROID_IMAGES]:
+                        if isinstance(item, (tuple, list)) and len(item) == 2:
+                            _, img_bytes = item
+                            if img_bytes:
+                                polaroid_bytes.append(img_bytes)
+                        elif isinstance(item, (bytes, bytearray)):
+                            polaroid_bytes.append(bytes(item))
+                        elif isinstance(item, str):
+                            try:
+                                img_bytes = download_image_bytes(item)
+                                if img_bytes:
+                                    polaroid_bytes.append(img_bytes)
+                            except Exception:
+                                pass
+
                     # Build the flat data dict expected by build_quote_pdf()
                     pdf_data = {
                         "client_name": sanitize_text_input(client_name),
@@ -882,7 +900,7 @@ with col_gen:
                         "plan2_waiting": lines(plan2_waiting_txt),
 
                         "total_price": f"€{total:.2f}",
-                        "polaroid_images": [img_bytes for _, img_bytes in st.session_state.site_images[:MAX_POLAROID_IMAGES]],
+                        "polaroid_images": polaroid_bytes,
                         "official_eurolife": lines(st.session_state.official_eurolife),
                         "official_interlife": lines(st.session_state.official_interlife),
                         "about_bio": final_bio,
