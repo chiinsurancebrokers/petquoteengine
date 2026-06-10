@@ -1030,9 +1030,13 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     padding_h = 14 * mm  # top/bottom padding inside the box
     box3_h = header_h + padding_h + max_items * per_item_h
 
-    # Reserve room for polaroids + footer; clamp box height to available space
-    polaroids_reserved = 14 * mm  # just footer clearance now (no polaroids on page 3)
-    available_h = box3_top - polaroids_reserved
+    # Reserve room for the promo banner + footer; clamp box height to available space
+    title_offset = 6 * mm  # box3_top is reduced by this before drawing the box
+    promo_gap = 8 * mm
+    promo_h = 16 * mm
+    footer_clearance = 18 * mm
+    promo_reserved = title_offset + promo_gap + promo_h + footer_clearance
+    available_h = box3_top - promo_reserved
     box3_h = max(50 * mm, min(box3_h, available_h))
 
     c.setFont(BOLD_FONT, 12.5)
@@ -1068,6 +1072,25 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
         _keep_in_frame(col_frame, [col_flow], col_frame_w, col_frame_h, c, shrink=True)
 
     # Polaroids removed from page 3 to avoid overlapping the highlights box.
+
+    # Kira Pet AI Nurse promo banner
+    promo_top = box3_top - box3_h - promo_gap
+    c.setFillColor(BRAND["soft"])
+    c.roundRect(margin_x, promo_top - promo_h, W - 2 * margin_x, promo_h, 8, stroke=0, fill=1)
+    c.setFillColor(BRAND["blue"])
+    c.roundRect(margin_x, promo_top - 3, W - 2 * margin_x, 3, 1.5, stroke=0, fill=1)
+
+    c.setFillColor(BRAND["dark"])
+    c.setFont(BOLD_FONT, 10.5)
+    c.drawString(margin_x + 6 * mm, promo_top - 6.5 * mm, "🐾 Kira Pet – AI Νοσηλεύτρια Κατοικιδίων")
+
+    c.setFillColor(BRAND["muted"])
+    c.setFont(BASE_FONT, 8.5)
+    c.drawString(
+        margin_x + 6 * mm, promo_top - 11.5 * mm,
+        "Ρωτήστε δωρεάν τα συμπτώματα του κατοικιδίου σας, 24/7, για άμεση καθοδήγηση: kiraaipet.streamlit.app"
+    )
+
     _draw_footer(c, W)
 
     c.save()
