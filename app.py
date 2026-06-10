@@ -743,8 +743,18 @@ with col_gen:
         # Validation
         errors = []
 
+        if not client_name.strip():
+            errors.append("Client name is required")
+
         try:
-            validate_client_data(client_name, client_phone, client_email)
+            validate_client_data({
+                "client_email": client_email,
+                "client_phone": client_phone,
+                "plan_1_price": plan_1_price,
+                "plan_2_price": plan_2_price,
+                "pet_count": pet_count,
+                "pet_dob": pet_dob,
+            })
         except ValidationError as ve:
             errors.append(str(ve))
 
