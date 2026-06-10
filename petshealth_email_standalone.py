@@ -148,7 +148,7 @@ def create_email_body_text(client_name: str, total_premium: str, language: str =
 PETSHEALTH Team
 
 Τηλέφωνο: +30 211 700 533
-Email: info@petshealth.gr
+Email: xiatropoulos@gmail.com
 Website: www.petshealth.gr
 
 Επειδή νοιαζόμαστε για τα κατοικίδιά σας όσο κι εσείς."""
@@ -174,7 +174,7 @@ Best regards,
 PETSHEALTH Team
 
 Phone: +30 211 700 533
-Email: info@petshealth.gr
+Email: xiatropoulos@gmail.com
 Website: www.petshealth.gr
 
 Because we care for your pets as much as you do."""
@@ -272,7 +272,7 @@ def create_email_body_html(client_name: str, total_premium: str, language: str =
                         <td style="background-color: #F9FAFB; padding: 30px; border-top: 1px solid #E5E7EB; text-align: center;">
                             <p style="margin: 0 0 12px 0; color: #111827; font-size: 14px; font-weight: 600;">Contact Us</p>
                             <p style="margin: 0 0 4px 0; color: #6B7280; font-size: 13px;">📞 +30 211 700 533</p>
-                            <p style="margin: 0 0 4px 0; color: #6B7280; font-size: 13px;">✉️ info@petshealth.gr</p>
+                            <p style="margin: 0 0 4px 0; color: #6B7280; font-size: 13px;">✉️ xiatropoulos@gmail.com</p>
                             <p style="margin: 0 0 16px 0; color: #6B7280; font-size: 13px;">🌐 www.petshealth.gr</p>
                             <p style="margin: 0; color: #9CA3AF; font-size: 12px; font-style: italic;">{tagline}</p>
                         </td>
