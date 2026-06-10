@@ -832,28 +832,70 @@ with col_gen:
                                 "waiting": lines(plan2_waiting_txt),
                             })
 
+                    if any("HOOLIE" in pk for pk in selected_plans):
+                        st.warning(
+                            "⚠️ Note: the current PDF layout only renders dedicated coverage "
+                            "cards for PET CARE PLUS (INTERLIFE) and EUROLIFE My Happy Pet. "
+                            "Hoolie plan(s) are included in the price total but won't get their "
+                            "own coverage page yet."
+                        )
+
+                    # Build the flat data dict expected by build_quote_pdf()
+                    pdf_data = {
+                        "client_name": sanitize_text_input(client_name),
+                        "client_phone": sanitize_text_input(client_phone),
+                        "client_email": sanitize_text_input(client_email),
+                        "location": sanitize_text_input(location),
+                        "quote_date": quote_date.strftime("%d/%m/%Y") if hasattr(quote_date, "strftime") else str(quote_date),
+                        "quote_mode": quote_mode,
+                        "pet_count": pet_count,
+                        "bulk_summary": sanitize_text_area(bulk_summary),
+                        "pet_name": sanitize_text_input(pet_name),
+                        "pet_species": pet_species,
+                        "pet_breed": sanitize_text_input(pet_breed),
+                        "pet_dob": sanitize_text_input(pet_dob),
+                        "pet_microchip": sanitize_text_input(pet_microchip),
+                        "marketing_hook": sanitize_text_input(marketing_hook),
+                        "notes": sanitize_text_area(notes),
+                        "selected_plans": selected_plans,
+
+                        "plan_1_name": plan_1_name,
+                        "plan_1_provider": plan_1_provider,
+                        "plan_1_price": f"{plan_1_price:.2f}",
+                        "plan_1_price_total": f"€{(plan_1_price * mult):.2f}",
+                        "plan1_limit": plan1_limit,
+                        "plan1_area": plan1_area,
+                        "plan1_key_facts": lines(plan1_key_facts_txt),
+                        "plan1_covers": lines(plan1_covers_txt),
+                        "plan1_exclusions": lines(plan1_exclusions_txt),
+                        "plan1_waiting": lines(plan1_waiting_txt),
+
+                        "plan_2_name": plan_2_name,
+                        "plan_2_provider": plan_2_provider,
+                        "plan_2_price": f"{plan_2_price:.2f}",
+                        "plan_2_price_total": f"€{(plan_2_price * mult):.2f}",
+                        "plan2_limit": plan2_limit,
+                        "plan2_area": plan2_area,
+                        "plan2_key_facts": lines(plan2_key_facts_txt),
+                        "plan2_covers": lines(plan2_covers_txt),
+                        "plan2_exclusions": lines(plan2_exclusions_txt),
+                        "plan2_waiting": lines(plan2_waiting_txt),
+
+                        "total_price": f"€{total:.2f}",
+                        "polaroid_images": [img_bytes for _, img_bytes in st.session_state.site_images[:MAX_POLAROID_IMAGES]],
+                        "official_eurolife": lines(st.session_state.official_eurolife),
+                        "official_interlife": lines(st.session_state.official_interlife),
+                        "about_bio": final_bio,
+                    }
+
+                    if final_highlights:
+                        if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
+                            pdf_data["official_eurolife"] = final_highlights[:18]
+                        if "PET CARE PLUS (INTERLIFE)" in selected_plans:
+                            pdf_data["official_interlife"] = final_highlights[:18]
+
                     # Build quote PDF
-                    quote_pdf_bytes = build_quote_pdf(
-                        client_name=sanitize_text_input(client_name),
-                        client_phone=sanitize_text_input(client_phone),
-                        client_email=sanitize_text_input(client_email),
-                        location=sanitize_text_input(location),
-                        quote_date=quote_date,
-                        quote_mode=quote_mode,
-                        pet_count=pet_count,
-                        bulk_summary=sanitize_text_area(bulk_summary),
-                        pet_name=sanitize_text_input(pet_name),
-                        pet_species=pet_species,
-                        pet_breed=sanitize_text_input(pet_breed),
-                        pet_dob=sanitize_text_input(pet_dob),
-                        pet_microchip=sanitize_text_input(pet_microchip),
-                        marketing_hook=sanitize_text_input(marketing_hook),
-                        notes=sanitize_text_area(notes),
-                        plans=plans_for_pdf,
-                        polaroid_images=st.session_state.site_images[:MAX_POLAROID_IMAGES],
-                        highlights=final_highlights[:40],
-                        about_bio=final_bio,
-                    )
+                    quote_pdf_bytes = build_quote_pdf(pdf_data)
 
                     # Merge with IPIDs if requested
                     if include_ipid:
