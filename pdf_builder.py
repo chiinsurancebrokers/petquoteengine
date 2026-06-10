@@ -1030,13 +1030,10 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     padding_h = 14 * mm  # top/bottom padding inside the box
     box3_h = header_h + padding_h + max_items * per_item_h
 
-    # Reserve room for the promo banner + footer; clamp box height to available space
+    # Reserve room for the title offset + footer; clamp box height to available space
     title_offset = 6 * mm  # box3_top is reduced by this before drawing the box
-    promo_gap = 8 * mm
-    promo_h = 16 * mm
     footer_clearance = 18 * mm
-    promo_reserved = title_offset + promo_gap + promo_h + footer_clearance
-    available_h = box3_top - promo_reserved
+    available_h = box3_top - title_offset - footer_clearance
     box3_h = max(50 * mm, min(box3_h, available_h))
 
     c.setFont(BOLD_FONT, 12.5)
@@ -1072,24 +1069,143 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
         _keep_in_frame(col_frame, [col_flow], col_frame_w, col_frame_h, c, shrink=True)
 
     # Polaroids removed from page 3 to avoid overlapping the highlights box.
+    _draw_footer(c, W)
 
-    # Kira Pet AI Nurse promo banner
-    promo_top = box3_top - box3_h - promo_gap
-    c.setFillColor(BRAND["soft"])
-    c.roundRect(margin_x, promo_top - promo_h, W - 2 * margin_x, promo_h, 8, stroke=0, fill=1)
+    # ============================================
+    # PAGE 4: KIRA PET AI NURSE PROMO
+    # ============================================
+    c.showPage()
+    _draw_header(c, W, H, "Kira Pet – AI Νοσηλεύτρια")
+
+    px = 14 * mm
+    pw = W - 28 * mm
+    py = H - 38 * mm
+
+    # Hero band
+    hero_h = 80 * mm
+    c.setFillColor(BRAND["bg"])
+    c.roundRect(px, py - hero_h, pw, hero_h, 12, stroke=0, fill=1)
     c.setFillColor(BRAND["blue"])
-    c.roundRect(margin_x, promo_top - 3, W - 2 * margin_x, 3, 1.5, stroke=0, fill=1)
+    c.roundRect(px, py - 4, pw, 4, 2, stroke=0, fill=1)
+
+    # Mascot circle
+    mascot_cx = px + 24 * mm
+    mascot_cy = py - hero_h / 2
+    c.setFillColor(colors.HexColor("#F4596B"))
+    c.circle(mascot_cx, mascot_cy, 16 * mm, stroke=0, fill=1)
+    c.setFillColor(colors.white)
+    c.circle(mascot_cx, mascot_cy + 3 * mm, 7 * mm, stroke=0, fill=1)
+    c.circle(mascot_cx - 4.5 * mm, mascot_cy + 8 * mm, 3 * mm, stroke=0, fill=1)
+    c.circle(mascot_cx + 4.5 * mm, mascot_cy + 8 * mm, 3 * mm, stroke=0, fill=1)
+    c.setFillColor(colors.HexColor("#F4596B"))
+    c.circle(mascot_cx - 2.5 * mm, mascot_cy + 2 * mm, 1 * mm, stroke=0, fill=1)
+    c.circle(mascot_cx + 2.5 * mm, mascot_cy + 2 * mm, 1 * mm, stroke=0, fill=1)
+
+    # Headline + subtext
+    text_x = px + 48 * mm
+    text_w = pw - (text_x - px) - 10 * mm
 
     c.setFillColor(BRAND["dark"])
-    c.setFont(BOLD_FONT, 10.5)
-    c.drawString(margin_x + 6 * mm, promo_top - 6.5 * mm, "🐾 Kira Pet – AI Νοσηλεύτρια Κατοικιδίων")
+    c.setFont(BOLD_FONT, 18)
+    c.drawString(text_x, py - 22 * mm, "Kira Pet")
+    c.setFont(BOLD_FONT, 11)
+    c.setFillColor(BRAND["blue"])
+    c.drawString(text_x, py - 30 * mm, "AI Νοσηλεύτρια Κατοικιδίων")
 
     c.setFillColor(BRAND["muted"])
-    c.setFont(BASE_FONT, 8.5)
-    c.drawString(
-        margin_x + 6 * mm, promo_top - 11.5 * mm,
-        "Ρωτήστε δωρεάν τα συμπτώματα του κατοικιδίου σας, 24/7, για άμεση καθοδήγηση: kiraaipet.streamlit.app"
+    c.setFont(BASE_FONT, 10)
+    intro_lines = [
+        "Ανησυχείτε για κάποιο σύμπτωμα του κατοικιδίου σας;",
+        "Η Kira σας καθοδηγεί άμεσα, με απλά λόγια, βήμα-βήμα,",
+        "οποιαδήποτε ώρα, εντελώς δωρεάν.",
+    ]
+    ty = py - 42 * mm
+    for line in intro_lines:
+        c.drawString(text_x, ty, line)
+        ty -= 5.5 * mm
+
+    # Feature pills
+    pill_y = ty - 4 * mm
+    pills = [
+        "Διαθέσιμη 24/7",
+        "Δωρεάν χρήση",
+        "Ανάλυση συμπτωμάτων",
+        "Ανάλυση φωτογραφίας",
+    ]
+    pill_x = text_x
+    c.setFont(BOLD_FONT, 8.5)
+    for label in pills:
+        tw = pdfmetrics.stringWidth(label, BOLD_FONT, 8.5)
+        pill_w = tw + 10 * mm
+        if pill_x + pill_w > px + pw - 6 * mm:
+            pill_x = text_x
+            pill_y -= 9 * mm
+        c.setFillColor(colors.white)
+        c.setStrokeColor(BRAND["blue"])
+        c.roundRect(pill_x, pill_y, pill_w, 7 * mm, 3.5 * mm, stroke=1, fill=1)
+        c.setFillColor(BRAND["blue"])
+        c.drawCentredString(pill_x + pill_w / 2, pill_y + 2.4 * mm, label)
+        pill_x += pill_w + 4 * mm
+
+    # "How it works" section
+    how_top = py - hero_h - 14 * mm
+    c.setFillColor(BRAND["dark"])
+    c.setFont(BOLD_FONT, 13)
+    c.drawString(px, how_top, "Πώς λειτουργεί")
+    how_top -= 10 * mm
+
+    steps = [
+        ("1", "Περιγράψτε το σύμπτωμα", "Πείτε στην Kira τι παρατηρήσατε στο κατοικίδιό σας, με δικά σας λόγια."),
+        ("2", "Απαντήστε σε λίγες ερωτήσεις", "Η Kira κάνει στοχευμένες ερωτήσεις για να κατανοήσει την κατάσταση."),
+        ("3", "Λάβετε καθοδήγηση & αναφορά", "Άμεση, κατανοητή ενημέρωση - και πότε χρειάζεται κτηνίατρος."),
+    ]
+    step_h = 22 * mm
+    for num, title, desc in steps:
+        c.setFillColor(BRAND["soft"])
+        c.circle(px + 5 * mm, how_top - 4 * mm, 5 * mm, stroke=0, fill=1)
+        c.setFillColor(BRAND["blue"])
+        c.setFont(BOLD_FONT, 11)
+        c.drawCentredString(px + 5 * mm, how_top - 5.6 * mm, num)
+
+        c.setFillColor(BRAND["dark"])
+        c.setFont(BOLD_FONT, 10.5)
+        c.drawString(px + 14 * mm, how_top - 2 * mm, title)
+
+        c.setFillColor(BRAND["muted"])
+        c.setFont(BASE_FONT, 9)
+        for line in _wrap_by_width(desc, BASE_FONT, 9, pw - 14 * mm):
+            how_top -= 5 * mm
+            c.drawString(px + 14 * mm, how_top - 2 * mm, line)
+
+        how_top -= step_h - len(_wrap_by_width(desc, BASE_FONT, 9, pw - 14 * mm)) * 5 * mm
+
+    # Disclaimer
+    disc_top = how_top - 4 * mm
+    c.setFillColor(BRAND["muted"])
+    c.setFont(BASE_FONT, 8)
+    disc_text = (
+        "Η Kira Pet παρέχει πληροφορίες για ενημερωτικούς σκοπούς μόνο και δεν αντικαθιστά "
+        "κτηνιατρική διάγνωση ή θεραπεία. Σε επείγον περιστατικό καλέστε άμεσα κτηνίατρο."
     )
+    for line in _wrap_by_width(disc_text, BASE_FONT, 8, pw):
+        c.drawString(px, disc_top, line)
+        disc_top -= 4.2 * mm
+
+    # CTA bar
+    cta_h = 22 * mm
+    cta_top = 38 * mm
+    c.setFillColor(BRAND["blue"])
+    c.roundRect(px, cta_top - cta_h, pw, cta_h, 10, stroke=0, fill=1)
+
+    c.setFillColor(colors.white)
+    c.setFont(BOLD_FONT, 13)
+    c.drawString(px + 8 * mm, cta_top - 9 * mm, "Δοκιμάστε την Kira Pet τώρα - δωρεάν")
+
+    c.setFont(BOLD_FONT, 12)
+    c.drawRightString(px + pw - 8 * mm, cta_top - 9 * mm, "kiraaipet.streamlit.app")
+
+    c.setFont(BASE_FONT, 8.5)
+    c.drawString(px + 8 * mm, cta_top - 16 * mm, "Ανοίξτε τον σύνδεσμο στο κινητό ή τον υπολογιστή σας για να ξεκινήσετε.")
 
     _draw_footer(c, W)
 
