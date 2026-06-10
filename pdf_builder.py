@@ -1031,7 +1031,7 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     box3_h = header_h + padding_h + max_items * per_item_h
 
     # Reserve room for polaroids + footer; clamp box height to available space
-    polaroids_reserved = 60 * mm
+    polaroids_reserved = 14 * mm  # just footer clearance now (no polaroids on page 3)
     available_h = box3_top - polaroids_reserved
     box3_h = max(50 * mm, min(box3_h, available_h))
 
@@ -1067,7 +1067,7 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
         col_frame = Frame(col_frame_x, col_frame_y, col_frame_w, col_frame_h, showBoundary=0)
         _keep_in_frame(col_frame, [col_flow], col_frame_w, col_frame_h, c, shrink=True)
 
-    _draw_page_polaroids(c, W, H, data, page_index=3)
+    # Polaroids removed from page 3 to avoid overlapping the highlights box.
     _draw_footer(c, W)
 
     c.save()
