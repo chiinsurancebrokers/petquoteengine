@@ -83,9 +83,9 @@ if "site_images" not in st.session_state:
 if "official_bio" not in st.session_state:
     st.session_state.official_bio = ""
 if "official_eurolife" not in st.session_state:
-    st.session_state.official_eurolife = ""
+    st.session_state.official_eurolife = []
 if "official_interlife" not in st.session_state:
-    st.session_state.official_interlife = ""
+    st.session_state.official_interlife = []
 if "pdf_generated" not in st.session_state:
     st.session_state.pdf_generated = False
 if "final_pdf_bytes" not in st.session_state:
@@ -669,9 +669,9 @@ with h1:
     if st.button("📄 Load Eurolife official info", use_container_width=True):
         with st.spinner("Fetching Eurolife data..."):
             try:
-                eur_data = fetch_highlights(EUROLIFE_URL)
-                st.session_state.official_eurolife = eur_data.get("html", "")
-                st.success("✅ Eurolife info loaded")
+                eur_highlights = fetch_highlights(EUROLIFE_URL)
+                st.session_state.official_eurolife = eur_highlights
+                st.success(f"✅ Eurolife info loaded ({len(eur_highlights)} highlights)")
             except WebScrapingError as e:
                 st.error(f"❌ Failed: {e}")
             except Exception as e:
@@ -681,9 +681,9 @@ with h2:
     if st.button("📄 Load Interlife official info", use_container_width=True):
         with st.spinner("Fetching Interlife data..."):
             try:
-                int_data = fetch_highlights(INTERLIFE_URL)
-                st.session_state.official_interlife = int_data.get("html", "")
-                st.success("✅ Interlife info loaded")
+                int_highlights = fetch_highlights(INTERLIFE_URL)
+                st.session_state.official_interlife = int_highlights
+                st.success(f"✅ Interlife info loaded ({len(int_highlights)} highlights)")
             except WebScrapingError as e:
                 st.error(f"❌ Failed: {e}")
             except Exception as e:
@@ -710,8 +710,8 @@ with ab1:
     if st.button("🌐 Load bio from petshealth.gr/team", use_container_width=True):
         with st.spinner("Fetching bio..."):
             try:
-                bio_data = fetch_highlights(PETSHEALTH_TEAM_URL)
-                st.session_state.official_bio = bio_data.get("html", "")
+                bio_items = fetch_highlights(PETSHEALTH_TEAM_URL)
+                st.session_state.official_bio = "\n\n".join(bio_items)
                 st.success("✅ Bio loaded from website")
             except WebScrapingError as e:
                 st.error(f"❌ Failed: {e}")
@@ -775,9 +775,9 @@ with col_gen:
                         final_highlights = lines(custom_highlights)
                     else:
                         if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans and st.session_state.official_eurolife:
-                            final_highlights.extend(lines(st.session_state.official_eurolife))
+                            final_highlights.extend(st.session_state.official_eurolife)
                         if "PET CARE PLUS (INTERLIFE)" in selected_plans and st.session_state.official_interlife:
-                            final_highlights.extend(lines(st.session_state.official_interlife))
+                            final_highlights.extend(st.session_state.official_interlife)
 
                     # Prepare plan data
                     plans_for_pdf = []
@@ -901,8 +901,8 @@ with col_gen:
 
                         "total_price": f"€{total:.2f}",
                         "polaroid_images": polaroid_bytes,
-                        "official_eurolife": lines(st.session_state.official_eurolife),
-                        "official_interlife": lines(st.session_state.official_interlife),
+                        "official_eurolife": st.session_state.official_eurolife,
+                        "official_interlife": st.session_state.official_interlife,
                         "about_bio": final_bio,
                     }
 
