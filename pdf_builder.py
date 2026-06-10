@@ -168,6 +168,37 @@ def _validate_data_dict(data: Dict[str, Any]) -> Dict[str, Any]:
                         outb.append(bytes(b))
             data["polaroid_images"] = outb
 
+    # Generic plans list (preferred). Each plan is a dict with:
+    #   name, provider, price, price_total, limit, area,
+    #   key_facts, covers, exclusions, waiting, highlights, highlight_title
+    plans = data.get("plans", [])
+    if isinstance(plans, list):
+        clean_plans = []
+        for p in plans:
+            if not isinstance(p, dict):
+                continue
+            cp = {
+                "name": _safe_str(p.get("name", ""), MAX_TEXT_LENGTH),
+                "provider": _safe_str(p.get("provider", ""), MAX_TEXT_LENGTH),
+                "price": _safe_str(p.get("price", ""), MAX_TEXT_LENGTH),
+                "price_total": _safe_str(p.get("price_total", ""), MAX_TEXT_LENGTH),
+                "limit": _safe_str(p.get("limit", ""), MAX_TEXT_LENGTH),
+                "area": _safe_str(p.get("area", ""), MAX_TEXT_LENGTH),
+                "highlight_title": _safe_str(p.get("highlight_title", ""), MAX_TEXT_LENGTH),
+            }
+            for lf in ("key_facts", "covers", "exclusions", "waiting", "highlights"):
+                v = p.get(lf, [])
+                if isinstance(v, str):
+                    cp[lf] = _coerce_bullets(v, max_items=MAX_LIST_ITEMS)
+                elif isinstance(v, list):
+                    cp[lf] = [_safe_str(x, MAX_TEXT_LENGTH) for x in v[:MAX_LIST_ITEMS] if x]
+                else:
+                    cp[lf] = []
+            clean_plans.append(cp)
+        data["plans"] = clean_plans
+    else:
+        data["plans"] = []
+
     return data
 
 
@@ -658,18 +689,38 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     y2 -= 8 * mm
 
     c.setFont(BASE_FONT, 10)
-    if "PET CARE PLUS (INTERLIFE)" in selected_plans:
-        c.drawString(14 * mm, y2, f"• {plan_1_name} – {plan_1_provider}")
-        y2 -= 6 * mm
-    if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
-        c.drawString(14 * mm, y2, f"• {plan_2_name} – {plan_2_provider}")
-        y2 -= 6 * mm
+    plans_list = data.get("plans", [])
+    if plans_list:
+        for p in plans_list:
+            label = f"{p['name']} – {p['provider']}" if p.get("provider") else p["name"]
+            c.drawString(14 * mm, y2, _safe_str(f"• {label}", 110))
+            y2 -= 6 * mm
+    else:
+        if "PET CARE PLUS (INTERLIFE)" in selected_plans:
+            c.drawString(14 * mm, y2, f"• {plan_1_name} – {plan_1_provider}")
+            y2 -= 6 * mm
+        if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
+            c.drawString(14 * mm, y2, f"• {plan_2_name} – {plan_2_provider}")
+            y2 -= 6 * mm
 
     # Pricing card
     y3 = y2 - 10 * mm
     card_x = 14 * mm
     card_w = W - 28 * mm
-    card_h = 52 * mm
+
+    line_gap = 11 * mm
+    total_bar_h = 13 * mm
+    header_pad = 24 * mm  # space above first price line
+
+    if plans_list:
+        n_rows = max(len(plans_list), 1)
+    else:
+        n_rows = sum([
+            "PET CARE PLUS (INTERLIFE)" in selected_plans,
+            "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans,
+        ]) or 1
+
+    card_h = header_pad + (n_rows - 1) * line_gap + total_bar_h + 6 * mm
 
     c.setStrokeColor(BRAND["border"])
     c.setFillColor(colors.white)
@@ -682,27 +733,37 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     c.drawRightString(card_x + card_w - 8 * mm, y3 - 10 * mm, "Annual Premium (€)")
 
     yy = y3 - 24 * mm
-    line_gap = 11 * mm
 
     plan_1_price_total = data.get("plan_1_price_total", "")
     plan_2_price_total = data.get("plan_2_price_total", "")
 
-    if "PET CARE PLUS (INTERLIFE)" in selected_plans:
-        c.setFillColor(BRAND["muted"])
-        c.setFont(BASE_FONT, 10)
-        c.drawString(card_x + 8 * mm, yy, _safe_str(plan_1_name, 40))
-        c.setFillColor(BRAND["dark"])
-        c.setFont(BOLD_FONT, 10.5)
-        c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_1_price_total, 20))
-        yy -= line_gap
+    if plans_list:
+        for p in plans_list:
+            c.setFillColor(BRAND["muted"])
+            c.setFont(BASE_FONT, 10)
+            c.drawString(card_x + 8 * mm, yy, _safe_str(p["name"], 40))
+            c.setFillColor(BRAND["dark"])
+            c.setFont(BOLD_FONT, 10.5)
+            c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(p.get("price_total", ""), 20))
+            yy -= line_gap
+    else:
+        if "PET CARE PLUS (INTERLIFE)" in selected_plans:
+            c.setFillColor(BRAND["muted"])
+            c.setFont(BASE_FONT, 10)
+            c.drawString(card_x + 8 * mm, yy, _safe_str(plan_1_name, 40))
+            c.setFillColor(BRAND["dark"])
+            c.setFont(BOLD_FONT, 10.5)
+            c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_1_price_total, 20))
+            yy -= line_gap
 
-    if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
-        c.setFillColor(BRAND["muted"])
-        c.setFont(BASE_FONT, 10)
-        c.drawString(card_x + 8 * mm, yy, _safe_str(plan_2_name, 40))
-        c.setFillColor(BRAND["dark"])
-        c.setFont(BOLD_FONT, 10.5)
-        c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_2_price_total, 20))
+        if "EUROLIFE My Happy Pet (SAFE PET SYSTEM)" in selected_plans:
+            c.setFillColor(BRAND["muted"])
+            c.setFont(BASE_FONT, 10)
+            c.drawString(card_x + 8 * mm, yy, _safe_str(plan_2_name, 40))
+            c.setFillColor(BRAND["dark"])
+            c.setFont(BOLD_FONT, 10.5)
+            c.drawRightString(card_x + card_w - 8 * mm, yy, _safe_str(plan_2_price_total, 20))
+            yy -= line_gap
 
     total_bar_h = 13 * mm
     c.setFillColor(BRAND["blue"])
@@ -745,7 +806,48 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     c.drawString(14 * mm, top, "Coverage Details (Summary)")
     top -= 8 * mm
 
-    if len(selected_plans) == 1:
+    if plans_list:
+        n = len(plans_list)
+        gap = 8 * mm
+        if n == 1:
+            card_w = W - 28 * mm
+        elif n == 2:
+            card_w = (W - 28 * mm - gap) / 2
+        else:
+            card_w = (W - 28 * mm - (n - 1) * gap) / n
+
+        card_h = 165 * mm if n == 1 else 170 * mm
+        y_top = top
+
+        for i, p in enumerate(plans_list):
+            x = 14 * mm + i * (card_w + gap)
+
+            name = p["name"]
+            provider = p.get("provider", "")
+            title = f"{name} ({provider})" if provider else name
+
+            price = p.get("price", "")
+            limit = p.get("limit", "")
+            area = p.get("area", "")
+            sub_parts = []
+            if price:
+                sub_parts.append(f"€{price}/year")
+            if limit:
+                sub_parts.append(f"Limit: {limit}")
+            if area:
+                sub_parts.append(f"Area: {area}")
+            subtitle = " | ".join(sub_parts)
+
+            blocks = [
+                ("Key Facts", p.get("key_facts", [])),
+                ("Covers (Summary)", p.get("covers", [])),
+                ("Not Covered (Indicative)", p.get("exclusions", [])),
+                ("Waiting Periods", p.get("waiting", [])),
+            ]
+
+            _draw_plan_card_platypus(c, x, y_top, card_w, card_h, title, subtitle, blocks)
+
+    elif len(selected_plans) == 1:
         x = 14 * mm
         w = W - 28 * mm
         h = 165 * mm
@@ -895,63 +997,61 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     box3_top = box2_top - box2_h - 10 * mm
     box3_h = 70 * mm
 
-    c.setFont(BOLD_FONT, 12.5)
-    c.setFillColor(BRAND["dark"])
-    c.drawString(margin_x, box3_top, "Official Highlights (Editable)")
-    box3_top -= 6 * mm
+    # Determine highlight columns: prefer per-plan highlights from data["plans"],
+    # falling back to legacy official_eurolife / official_interlife two-column layout.
+    highlight_cols: List[Tuple[str, List[str]]] = []
+    for p in plans_list:
+        items = p.get("highlights", [])
+        if items:
+            title = p.get("highlight_title") or p.get("name", "Highlights")
+            highlight_cols.append((title, items))
 
-    gap = 8 * mm
-    col_w = (W - 2 * margin_x - gap) / 2
-
-    # EUROLIFE column
-    c.setStrokeColor(BRAND["border"])
-    c.setFillColor(colors.white)
-    c.roundRect(margin_x, box3_top - box3_h, col_w, box3_h, 10, stroke=1, fill=1)
-    c.setFillColor(BRAND["soft"])
-    c.roundRect(margin_x, box3_top - 12 * mm, col_w, 12 * mm, 10, stroke=0, fill=1)
-    c.setFont(BOLD_FONT, 10.8)
-    c.setFillColor(BRAND["dark"])
-    c.drawString(margin_x + 6 * mm, box3_top - 8 * mm, "EUROLIFE – My Happy Pet")
-
-    eu = data.get("official_eurolife", [])
-    if not eu:
-        eu = [
+    if not highlight_cols:
+        eu = data.get("official_eurolife", []) or [
             "Προγραμμάτισε την επίσκεψη σου στα γραφεία μας μέσω της εφαρμογής Book Your Visit",
             "Προστάτεψε αποτελεσματικά τον πιο χνουδωτό σου φίλο από 75€/ χρόνο",
         ]
-    eu_flow = _create_platypus_bullets(eu, small_style, max_items=18)
-    eu_frame_x = margin_x + 6 * mm
-    eu_frame_y = box3_top - box3_h + 6 * mm
-    eu_frame_w = col_w - 12 * mm
-    eu_frame_h = box3_h - 20 * mm
-    eu_frame = Frame(eu_frame_x, eu_frame_y, eu_frame_w, eu_frame_h, showBoundary=0)
-    _keep_in_frame(eu_frame, [eu_flow], eu_frame_w, eu_frame_h, c, shrink=True)
-
-    # INTERLIFE column
-    xr = margin_x + col_w + gap
-    c.setStrokeColor(BRAND["border"])
-    c.setFillColor(colors.white)
-    c.roundRect(xr, box3_top - box3_h, col_w, box3_h, 10, stroke=1, fill=1)
-    c.setFillColor(BRAND["soft"])
-    c.roundRect(xr, box3_top - 12 * mm, col_w, 12 * mm, 10, stroke=0, fill=1)
-    c.setFont(BOLD_FONT, 10.8)
-    c.setFillColor(BRAND["dark"])
-    c.drawString(xr + 6 * mm, box3_top - 8 * mm, "INTERLIFE – PET CARE")
-
-    it = data.get("official_interlife", [])
-    if not it:
-        it = [
+        it = data.get("official_interlife", []) or [
             "Όταν αγαπώ… προσφέρω, φροντίζω, προνοώ!",
             "Ουσιαστική κάλυψη έναντι ατυχημάτων ή/και ασθενειών σε σκύλους, ανεξαρτήτως ράτσας.",
             "Νοσηλεία • Εξετάσεις • Αμοιβές Ιατρών • Θεραπείες & Χειρουργικές Επεμβάσεις",
         ]
-    it_flow = _create_platypus_bullets(it, small_style, max_items=18)
-    it_frame_x = xr + 6 * mm
-    it_frame_y = box3_top - box3_h + 6 * mm
-    it_frame_w = col_w - 12 * mm
-    it_frame_h = box3_h - 20 * mm
-    it_frame = Frame(it_frame_x, it_frame_y, it_frame_w, it_frame_h, showBoundary=0)
-    _keep_in_frame(it_frame, [it_flow], it_frame_w, it_frame_h, c, shrink=True)
+        highlight_cols = [
+            ("EUROLIFE – My Happy Pet", eu),
+            ("INTERLIFE – PET CARE", it),
+        ]
+
+    c.setFont(BOLD_FONT, 12.5)
+    c.setFillColor(BRAND["dark"])
+    c.drawString(margin_x, box3_top, "Official Highlights")
+    box3_top -= 6 * mm
+
+    n_cols = len(highlight_cols)
+    gap = 8 * mm
+    col_w = (W - 2 * margin_x - (n_cols - 1) * gap) / n_cols
+
+    for i, (col_title, col_items) in enumerate(highlight_cols):
+        cx = margin_x + i * (col_w + gap)
+
+        c.setStrokeColor(BRAND["border"])
+        c.setFillColor(colors.white)
+        c.roundRect(cx, box3_top - box3_h, col_w, box3_h, 10, stroke=1, fill=1)
+        c.setFillColor(BRAND["soft"])
+        c.roundRect(cx, box3_top - 12 * mm, col_w, 12 * mm, 10, stroke=0, fill=1)
+        c.setFont(BOLD_FONT, 10.8)
+        c.setFillColor(BRAND["dark"])
+        title_lines = _wrap_by_width(_safe_str(col_title, 80), BOLD_FONT, 10.8, col_w - 12 * mm)
+        ty = box3_top - 8 * mm
+        for line in title_lines[:1]:
+            c.drawString(cx + 6 * mm, ty, line)
+
+        col_flow = _create_platypus_bullets(col_items, small_style, max_items=18)
+        col_frame_x = cx + 6 * mm
+        col_frame_y = box3_top - box3_h + 6 * mm
+        col_frame_w = col_w - 12 * mm
+        col_frame_h = box3_h - 20 * mm
+        col_frame = Frame(col_frame_x, col_frame_y, col_frame_w, col_frame_h, showBoundary=0)
+        _keep_in_frame(col_frame, [col_flow], col_frame_w, col_frame_h, c, shrink=True)
 
     _draw_page_polaroids(c, W, H, data, page_index=3)
     _draw_footer(c, W)
