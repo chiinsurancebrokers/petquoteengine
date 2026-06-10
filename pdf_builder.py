@@ -455,7 +455,7 @@ def _draw_header(c: canvas.Canvas, W: float, H: float, right_title: str) -> None
 def _draw_footer(c: canvas.Canvas, W: float) -> None:
     c.setFillColor(colors.HexColor("#9CA3AF"))
     c.setFont(BASE_FONT, 8.5)
-    c.drawString(14 * mm, 12 * mm, "PETSHEALTH | www.petshealth.gr | info@petshealth.gr | +30 211 700 533")
+    c.drawString(14 * mm, 12 * mm, "PETSHEALTH | www.petshealth.gr | xiatropoulos@gmail.com | +30 211 700 533")
     c.setFont(BASE_FONT, 7.5)
     c.drawRightString(W - 14 * mm, 12 * mm, "Because we care for your pets as much as you do")
 
@@ -993,18 +993,19 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
     cii_frame = Frame(cii_frame_x, cii_frame_y, cii_frame_w, cii_frame_h, showBoundary=0)
     _keep_in_frame(cii_frame, [cii_flow], cii_frame_w, cii_frame_h, c, shrink=True)
 
-    # Official highlights (two columns)
+    # Official highlights (N columns)
     box3_top = box2_top - box2_h - 10 * mm
-    box3_h = 70 * mm
 
     # Determine highlight columns: prefer per-plan highlights from data["plans"],
     # falling back to legacy official_eurolife / official_interlife two-column layout.
+    HIGHLIGHTS_MAX_ITEMS = 8  # conservative cap; Greek bullets often wrap to 2 lines
+
     highlight_cols: List[Tuple[str, List[str]]] = []
     for p in plans_list:
         items = p.get("highlights", [])
         if items:
             title = p.get("highlight_title") or p.get("name", "Highlights")
-            highlight_cols.append((title, items))
+            highlight_cols.append((title, items[:HIGHLIGHTS_MAX_ITEMS]))
 
     if not highlight_cols:
         eu = data.get("official_eurolife", []) or [
@@ -1017,9 +1018,22 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
             "Νοσηλεία • Εξετάσεις • Αμοιβές Ιατρών • Θεραπείες & Χειρουργικές Επεμβάσεις",
         ]
         highlight_cols = [
-            ("EUROLIFE – My Happy Pet", eu),
-            ("INTERLIFE – PET CARE", it),
+            ("EUROLIFE – My Happy Pet", eu[:HIGHLIGHTS_MAX_ITEMS]),
+            ("INTERLIFE – PET CARE", it[:HIGHLIGHTS_MAX_ITEMS]),
         ]
+
+    # Box height grows with the longest column's item count so bullets don't
+    # overflow into the polaroid area below. Reserve space for polaroids.
+    max_items = max((len(items) for _, items in highlight_cols), default=0)
+    per_item_h = 7.5 * mm  # approx height per bullet line at small_style size
+    header_h = 12 * mm
+    padding_h = 14 * mm  # top/bottom padding inside the box
+    box3_h = header_h + padding_h + max_items * per_item_h
+
+    # Reserve room for polaroids + footer; clamp box height to available space
+    polaroids_reserved = 60 * mm
+    available_h = box3_top - polaroids_reserved
+    box3_h = max(50 * mm, min(box3_h, available_h))
 
     c.setFont(BOLD_FONT, 12.5)
     c.setFillColor(BRAND["dark"])
@@ -1045,7 +1059,7 @@ def build_quote_pdf(data: Dict[str, Any]) -> bytes:
         for line in title_lines[:1]:
             c.drawString(cx + 6 * mm, ty, line)
 
-        col_flow = _create_platypus_bullets(col_items, small_style, max_items=18)
+        col_flow = _create_platypus_bullets(col_items, small_style, max_items=HIGHLIGHTS_MAX_ITEMS)
         col_frame_x = cx + 6 * mm
         col_frame_y = box3_top - box3_h + 6 * mm
         col_frame_w = col_w - 12 * mm
